@@ -65,11 +65,43 @@ interface VaultState {
 
 let repository: VaultRepository | null = null;
 
+/**
+ * Guards `init` so concurrent or repeated calls share a single run. Without it,
+ * two inits on an empty vault each generate their own seed (fresh ids) and save
+ * both, leaving groups and categories describing different vaults. React's
+ * StrictMode invokes effects twice in development, so this is the normal case.
+ */
+let initPromise: Promise<void> | null = null;
+
+/**
+ * Serializes persistence. A Tauri vault is several JSON files written one after
+ * another, so two overlapping saves interleave their writes and tear the vault
+ * (groups.json from one state, categories.json from another). Chaining makes
+ * each save finish before the next starts; every save writes the whole state,
+ * so the last one to run leaves the vault correct.
+ */
+let saveChain: Promise<unknown> = Promise.resolve();
+
+function persist(vault: Vault): Promise<void> {
+  saveChain = saveChain
+    // A failed save must not break the chain for every save after it.
+    .catch(() => undefined)
+    .then(() => repository?.save(vault));
+  return saveChain as Promise<void>;
+}
+
+/** Test seam: drop module state so a fresh store starts from nothing. */
+export function resetVaultPersistence(): void {
+  repository = null;
+  initPromise = null;
+  saveChain = Promise.resolve();
+}
+
 export const useVault = create<VaultState>((set, get) => {
   /** Apply a change to the vault, then persist it. */
   const mutate = (next: Vault) => {
     set({ vault: next });
-    void repository?.save(next);
+    void persist(next);
   };
 
   const addTx = (tx: Transaction) => {
@@ -83,16 +115,23 @@ export const useVault = create<VaultState>((set, get) => {
     repoLabel: "",
     error: null,
 
-    async init() {
-      try {
-        repository = await pickRepository();
-        const loaded = await repository.load();
-        const vault = loaded ?? seedVault();
-        if (loaded === null) await repository.save(vault);
-        set({ vault, status: "ready", repoLabel: repository.label });
-      } catch (e) {
-        set({ status: "error", error: e instanceof Error ? e.message : String(e) });
-      }
+    init() {
+      // One run per session, however many times this is called.
+      initPromise ??= (async () => {
+        try {
+          const repo = await pickRepository();
+          repository = repo;
+          const loaded = await repo.load();
+          const vault = loaded ?? seedVault();
+          if (loaded === null) await persist(vault);
+          set({ vault, status: "ready", repoLabel: repo.label });
+        } catch (e) {
+          set({ status: "error", error: e instanceof Error ? e.message : String(e) });
+          // Let a later call retry after a failure.
+          initPromise = null;
+        }
+      })();
+      return initPromise;
     },
 
     addAccount({ name, type, openingBalance }) {

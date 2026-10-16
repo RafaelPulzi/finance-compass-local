@@ -4,6 +4,55 @@
   --font-sans: system-ui, "Segoe UI", Roboto, sans-serif;
 }
 
+/*
+ * Chart tokens. Series colours are the validated categorical slots 1-2, stepped
+ * per mode; chrome is one shade off the surface the charts actually render on
+ * (white / slate-800). Validated with the dataviz palette checker against those
+ * two surfaces: all six checks pass in both modes.
+ * Status colours are the fixed reserved palette and are never themed; warning is
+ * sub-3:1 on light by design, so every status mark ships with an icon and label.
+ */
+.viz-root {
+  color-scheme: light;
+  --viz-surface: #ffffff;
+  --viz-text-primary: #0b0b0b;
+  --viz-text-secondary: #52514e;
+  --viz-muted: #898781;
+  --viz-grid: #e2e8f0;
+  --viz-axis: #cbd5e1;
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --status-good: #0ca30c;
+  --status-warning: #fab219;
+  --status-critical: #d03b3b;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) .viz-root {
+    color-scheme: dark;
+    --viz-surface: #1e293b;
+    --viz-text-primary: #f0efec;
+    --viz-text-secondary: #c3c2b7;
+    --viz-muted: #898781;
+    --viz-grid: #334155;
+    --viz-axis: #475569;
+    --series-1: #3987e5;
+    --series-2: #d95926;
+  }
+}
+
+:root[data-theme="dark"] .viz-root {
+  color-scheme: dark;
+  --viz-surface: #1e293b;
+  --viz-text-primary: #f0efec;
+  --viz-text-secondary: #c3c2b7;
+  --viz-muted: #898781;
+  --viz-grid: #334155;
+  --viz-axis: #475569;
+  --series-1: #3987e5;
+  --series-2: #d95926;
+}
+
 html,
 body,
 #root {

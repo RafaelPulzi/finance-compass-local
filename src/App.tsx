@@ -3,6 +3,7 @@ import { deriveNetWorth } from "./domain/balances";
 import { formatBRL } from "./domain/money";
 import { useVault } from "./store/useVault";
 import { AccountsPanel } from "./ui/AccountsPanel";
+import { ImportPanel } from "./ui/ImportPanel";
 import { TransactionsPanel } from "./ui/TransactionsPanel";
 
 export default function App() {
@@ -50,8 +51,11 @@ export default function App() {
         </div>
       </header>
 
-      <main className="mx-auto grid max-w-4xl gap-5 px-6 py-6 md:grid-cols-2">
-        <AccountsPanel />
+      <main className="mx-auto grid max-w-4xl items-start gap-5 px-6 py-6 md:grid-cols-2">
+        <div className="grid gap-5">
+          <AccountsPanel />
+          <ImportPanel />
+        </div>
         <TransactionsPanel />
       </main>
     </div>

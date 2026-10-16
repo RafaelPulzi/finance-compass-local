@@ -1,6 +1,6 @@
 import { type FormEvent, useMemo, useState } from "react";
 import { formatBRL, parseBRL } from "../domain/money";
-import type { CategoryKind, Transaction } from "../domain/types";
+import type { Category, Transaction } from "../domain/types";
 import { useVault } from "../store/useVault";
 import { todayISO } from "./labels";
 
@@ -11,6 +11,7 @@ export function TransactionsPanel() {
   const addIncome = useVault((s) => s.addIncome);
   const addExpense = useVault((s) => s.addExpense);
   const addTransfer = useVault((s) => s.addTransfer);
+  const setTransactionCategory = useVault((s) => s.setTransactionCategory);
 
   const [kind, setKind] = useState<Kind>("expense");
   const [date, setDate] = useState(todayISO());
@@ -30,18 +31,26 @@ export function TransactionsPanel() {
     [vault.categories],
   );
 
-  // Categories whose group matches the kind of transaction being entered.
-  const categoryOptions = useMemo(() => {
-    const wanted: CategoryKind | null =
-      kind === "transfer" ? null : kind;
-    if (wanted === null) return [];
+  /** Categories split by the kind of transaction they can classify. */
+  const categoriesByKind = useMemo(() => {
     const groupKind = new Map(vault.groups.map((g) => [g.id, g.kind]));
-    return vault.categories.filter((c) => groupKind.get(c.groupId) === wanted);
-  }, [kind, vault.groups, vault.categories]);
+    const byKind: Record<"income" | "expense", Category[]> = { income: [], expense: [] };
+    for (const category of vault.categories) {
+      const k = groupKind.get(category.groupId);
+      if (k) byKind[k].push(category);
+    }
+    return byKind;
+  }, [vault.groups, vault.categories]);
+
+  const categoryOptions = kind === "transfer" ? [] : categoriesByKind[kind];
 
   const recent = [...vault.transactions]
     .sort((a, b) => (a.date < b.date ? 1 : -1))
-    .slice(0, 12);
+    .slice(0, 15);
+
+  const uncategorizedCount = vault.transactions.filter(
+    (tx) => tx.kind !== "transfer" && tx.categoryId === null,
+  ).length;
 
   function submit(e: FormEvent) {
     e.preventDefault();
@@ -75,16 +84,19 @@ export function TransactionsPanel() {
 
   return (
     <section className="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-700 dark:bg-slate-800">
-      <h2 className="mb-3 text-lg font-semibold text-slate-800 dark:text-slate-100">
-        Transações
-      </h2>
+      <div className="mb-3 flex items-baseline justify-between">
+        <h2 className="text-lg font-semibold text-slate-800 dark:text-slate-100">
+          Transações
+        </h2>
+        {uncategorizedCount > 0 && (
+          <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+            {uncategorizedCount} sem categoria
+          </span>
+        )}
+      </div>
 
       <form onSubmit={submit} className="mb-4 grid grid-cols-2 gap-2">
-        <select
-          className={inputClass}
-          value={kind}
-          onChange={(e) => setKind(e.target.value as Kind)}
-        >
+        <select className={inputClass} value={kind} onChange={(e) => setKind(e.target.value as Kind)}>
           <option value="expense">Despesa</option>
           <option value="income">Receita</option>
           <option value="transfer">Transferência</option>
@@ -141,25 +153,50 @@ export function TransactionsPanel() {
           <li className="py-2 text-slate-500">Nenhuma transação ainda.</li>
         )}
         {recent.map((tx) => (
-          <li key={tx.id} className="flex items-center justify-between py-2">
-            <div>
-              <div className="text-slate-800 dark:text-slate-100">
+          <li key={tx.id} className="flex items-center justify-between gap-2 py-2">
+            <div className="min-w-0">
+              <div className="truncate text-slate-800 dark:text-slate-100">
                 {tx.description || "(sem descrição)"}
               </div>
               <div className="text-xs text-slate-500">
-                {tx.date} ·{" "}
-                {tx.kind === "transfer"
-                  ? `${accountName.get(tx.fromAccountId) ?? "?"} → ${accountName.get(tx.toAccountId) ?? "?"}`
-                  : `${categoryName.get(tx.categoryId) ?? "?"} · ${accountName.get(tx.accountId) ?? "?"}`}
+                {tx.kind === "transfer" ? (
+                  <>
+                    {tx.date} · {accountName.get(tx.fromAccountId) ?? "?"} →{" "}
+                    {accountName.get(tx.toAccountId) ?? "?"}
+                  </>
+                ) : tx.categoryId === null ? (
+                  // Imported transactions arrive uncategorized; classify them here.
+                  <span className="flex items-center gap-1">
+                    {tx.date} ·
+                    <select
+                      className="rounded border border-amber-400 bg-amber-50 px-1 py-0.5 text-xs text-amber-900 dark:bg-amber-950 dark:text-amber-200"
+                      value=""
+                      onChange={(e) =>
+                        e.target.value && setTransactionCategory(tx.id, e.target.value)
+                      }
+                    >
+                      <option value="">Sem categoria</option>
+                      {categoriesByKind[tx.kind].map((c) => (
+                        <option key={c.id} value={c.id}>{c.name}</option>
+                      ))}
+                    </select>
+                    · {accountName.get(tx.accountId) ?? "?"}
+                  </span>
+                ) : (
+                  <>
+                    {tx.date} · {categoryName.get(tx.categoryId) ?? "?"} ·{" "}
+                    {accountName.get(tx.accountId) ?? "?"}
+                  </>
+                )}
               </div>
             </div>
             <span
               className={
                 tx.kind === "income"
-                  ? "font-mono text-emerald-600 dark:text-emerald-400"
+                  ? "shrink-0 font-mono text-emerald-600 dark:text-emerald-400"
                   : tx.kind === "expense"
-                    ? "font-mono text-red-600 dark:text-red-400"
-                    : "font-mono text-slate-500"
+                    ? "shrink-0 font-mono text-red-600 dark:text-red-400"
+                    : "shrink-0 font-mono text-slate-500"
               }
             >
               {tx.kind === "income" ? "+" : tx.kind === "expense" ? "-" : ""}

@@ -55,18 +55,27 @@ interface TransactionBase {
   description: string;
 }
 
-/** Money coming into one Account, classified by an income Category. */
-export interface IncomeTransaction extends TransactionBase {
-  kind: "income";
+/**
+ * Fields shared by the two kinds that hit a single Account and carry a Category.
+ * `categoryId` is null while a Transaction is uncategorized, which is how every
+ * imported Transaction starts; the user assigns the Category afterward.
+ * `fitid` is the bank's own id, present only on imported Transactions, and is
+ * what an Import dedups against within an Account.
+ */
+interface SingleAccountTransaction extends TransactionBase {
   accountId: Id;
-  categoryId: Id;
+  categoryId: Id | null;
+  fitid?: string;
+}
+
+/** Money coming into one Account, classified by an income Category. */
+export interface IncomeTransaction extends SingleAccountTransaction {
+  kind: "income";
 }
 
 /** Money leaving one Account, classified by an expense Category. */
-export interface ExpenseTransaction extends TransactionBase {
+export interface ExpenseTransaction extends SingleAccountTransaction {
   kind: "expense";
-  accountId: Id;
-  categoryId: Id;
 }
 
 /**
@@ -93,10 +102,30 @@ export interface Budget {
   monthlyLimit: Centavos;
 }
 
+// --- Imports --------------------------------------------------------------
+
+/**
+ * The record of one Statement having been imported into one Account: what was
+ * added, and what was skipped because the Account already had it.
+ */
+export interface ImportRecord {
+  id: Id;
+  accountId: Id;
+  /** ISO timestamp of when the import ran. */
+  importedAt: string;
+  fileName: string;
+  added: number;
+  skipped: number;
+}
+
 // --- Vault ----------------------------------------------------------------
 
-/** Current on-disk schema version for the vault files (see docs/adr/0002). */
-export const VAULT_SCHEMA_VERSION = 1 as const;
+/**
+ * Current on-disk schema version for the vault files (see docs/adr/0002).
+ * v2 added Import records, and made Transactions carry an optional bank `fitid`
+ * and a nullable `categoryId` so imported entries can start uncategorized.
+ */
+export const VAULT_SCHEMA_VERSION = 2 as const;
 
 /** The whole in-memory model, mirrored to the JSON files in the vault folder. */
 export interface Vault {
@@ -106,6 +135,7 @@ export interface Vault {
   categories: Category[];
   transactions: Transaction[];
   budgets: Budget[];
+  imports: ImportRecord[];
 }
 
 export function emptyVault(): Vault {
@@ -116,5 +146,6 @@ export function emptyVault(): Vault {
     categories: [],
     transactions: [],
     budgets: [],
+    imports: [],
   };
 }

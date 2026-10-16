@@ -15,14 +15,35 @@ export interface VaultRepository {
   save(vault: Vault): Promise<void>;
 }
 
+/**
+ * Read a vault from stored JSON, upgrading older schema versions on the way in.
+ *
+ * v1 -> v2 needs no data rewriting: Import records simply didn't exist, and the
+ * fields v2 added to Transactions (`fitid`, a nullable `categoryId`) are both
+ * satisfied by v1 rows, which always carried a real category and no fitid.
+ * A vault written by a *newer* app version is refused rather than silently
+ * half-read, so an unknown field can't be dropped on the next save.
+ */
 export function parseVault(raw: unknown): Vault {
-  const vault = raw as Vault;
-  if (!vault || vault.schemaVersion !== VAULT_SCHEMA_VERSION) {
+  const stored = raw as Partial<Vault> & { schemaVersion?: unknown };
+  const version = stored?.schemaVersion;
+  if (typeof version !== "number") {
+    throw new Error(`Vault sem versão de schema: ${String(version)}`);
+  }
+  if (version > VAULT_SCHEMA_VERSION) {
     throw new Error(
-      `Unsupported vault schema version: ${(vault as { schemaVersion?: unknown })?.schemaVersion}`,
+      `Este cofre foi criado por uma versão mais nova do Finance Compass (schema ${version}).`,
     );
   }
-  return vault;
+  return {
+    schemaVersion: VAULT_SCHEMA_VERSION,
+    accounts: stored.accounts ?? [],
+    groups: stored.groups ?? [],
+    categories: stored.categories ?? [],
+    transactions: stored.transactions ?? [],
+    budgets: stored.budgets ?? [],
+    imports: stored.imports ?? [],
+  };
 }
 
 /** True when running inside the Tauri desktop shell (vs. a plain browser dev server). */

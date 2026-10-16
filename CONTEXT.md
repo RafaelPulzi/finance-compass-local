@@ -30,6 +30,9 @@ _Avoid_: Wallet, ledger, source
 A label for what an Income or Expense Transaction was for (e.g. Groceries, Salary, Rent). Income and expense Categories are kept separate. Transfers have no Category.
 _Avoid_: Tag, label, bucket
 
+**Uncategorized**:
+The state of an Income or Expense Transaction that has no Category yet. Every imported Transaction starts uncategorized until the user classifies it. It is the absence of a Category, not a Category named "uncategorized", so uncategorized money is counted in Account balances but in no Category total or Budget.
+
 **Group**:
 A named collection of Categories (e.g. "Food" containing "Groceries" and "Restaurants"). Categories are organised two levels deep: Group → Category, no deeper.
 _Avoid_: Parent category, folder

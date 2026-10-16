@@ -10,6 +10,7 @@ import type {
   Budget,
   Category,
   Group,
+  ImportRecord,
   Transaction,
   Vault,
 } from "../domain/types";
@@ -31,6 +32,7 @@ const FILES = {
   categories: `${DIR}/categories.json`,
   transactions: `${DIR}/transactions.json`,
   budgets: `${DIR}/budgets.json`,
+  imports: `${DIR}/imports.json`,
 } as const;
 
 async function readJson<T>(path: string, fallback: T): Promise<T> {
@@ -47,15 +49,19 @@ export function createTauriRepository(): VaultRepository {
     label: "Local vault (JSON files on disk)",
     async load() {
       if (!(await exists(FILES.meta, base))) return null;
-      const vault: Vault = {
+      // Keep the version the files were written with so parseVault can migrate it.
+      const meta = await readJson<{ schemaVersion: number }>(FILES.meta, {
         schemaVersion: VAULT_SCHEMA_VERSION,
+      });
+      return parseVault({
+        schemaVersion: meta.schemaVersion,
         accounts: await readJson<Account[]>(FILES.accounts, []),
         groups: await readJson<Group[]>(FILES.groups, []),
         categories: await readJson<Category[]>(FILES.categories, []),
         transactions: await readJson<Transaction[]>(FILES.transactions, []),
         budgets: await readJson<Budget[]>(FILES.budgets, []),
-      };
-      return parseVault(vault);
+        imports: await readJson<ImportRecord[]>(FILES.imports, []),
+      });
     },
     async save(vault: Vault) {
       await mkdir(DIR, { ...base, recursive: true });
@@ -65,6 +71,7 @@ export function createTauriRepository(): VaultRepository {
       await writeJson(FILES.categories, vault.categories);
       await writeJson(FILES.transactions, vault.transactions);
       await writeJson(FILES.budgets, vault.budgets);
+      await writeJson(FILES.imports, vault.imports);
     },
   };
 }

@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Core permissions plus read/write access to the vault folder in app data.",
+  "description": "Core permissions, the vault-location pointer in app data, and the default vault folder. A vault folder the user picks is added to the scope at runtime by the `allow_vault_dir` command.",
   "windows": ["main"],
   "permissions": [
     "core:default",
@@ -9,19 +9,28 @@
     "fs:default",
     {
       "identifier": "fs:allow-exists",
-      "allow": [{ "path": "$APPDATA/vault" }, { "path": "$APPDATA/vault/**" }]
+      "allow": [
+        { "path": "$APPDATA" },
+        { "path": "$APPDATA/settings.json" },
+        { "path": "$APPDATA/vault" },
+        { "path": "$APPDATA/vault/**" }
+      ]
     },
     {
       "identifier": "fs:allow-mkdir",
-      "allow": [{ "path": "$APPDATA/vault" }, { "path": "$APPDATA/vault/**" }]
+      "allow": [
+        { "path": "$APPDATA" },
+        { "path": "$APPDATA/vault" },
+        { "path": "$APPDATA/vault/**" }
+      ]
     },
     {
       "identifier": "fs:allow-read-text-file",
-      "allow": [{ "path": "$APPDATA/vault/**" }]
+      "allow": [{ "path": "$APPDATA/settings.json" }, { "path": "$APPDATA/vault/**" }]
     },
     {
       "identifier": "fs:allow-write-text-file",
-      "allow": [{ "path": "$APPDATA/vault/**" }]
+      "allow": [{ "path": "$APPDATA/settings.json" }, { "path": "$APPDATA/vault/**" }]
     }
   ]
 }

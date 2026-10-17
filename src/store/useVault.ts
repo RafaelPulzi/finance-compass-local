@@ -16,17 +16,38 @@ import type {
   Vault,
 } from "../domain/types";
 import { emptyVault } from "../domain/types";
-import { type VaultRepository, pickRepository } from "../persistence/repository";
+import {
+  type VaultFolderPick,
+  type VaultRepository,
+  createVaultRepositoryAt,
+  inspectVaultFolder,
+  isTauri,
+  pickRepository,
+} from "../persistence/repository";
 
 type Status = "loading" | "ready" | "error";
+
+/** Outcome of changing the vault folder, reported back to the UI that asked. */
+export type VaultSwitchResult = { ok: true } | { ok: false; message: string };
 
 interface VaultState {
   vault: Vault;
   status: Status;
   repoLabel: string;
   error: string | null;
+  /** Absolute folder the vault lives in, or null when it isn't folder-backed. */
+  vaultDir: string | null;
+  /** Whether this runtime can open a vault folder at all (desktop only). */
+  canChooseVault: boolean;
 
   init: () => Promise<void>;
+
+  /** Ask the user for a folder. Returns null if they cancelled. */
+  chooseVaultFolder: () => Promise<VaultFolderPick | null>;
+  /** Switch to the vault already stored in `dir`, leaving the current one untouched. */
+  openVaultAt: (dir: string) => Promise<VaultSwitchResult>;
+  /** Write the current vault into `dir` and keep working there. */
+  moveVaultTo: (dir: string) => Promise<VaultSwitchResult>;
 
   addAccount: (input: {
     name: string;
@@ -83,10 +104,14 @@ let initPromise: Promise<void> | null = null;
 let saveChain: Promise<unknown> = Promise.resolve();
 
 function persist(vault: Vault): Promise<void> {
+  // Bind the save to the repository that was current when the change was made.
+  // Reading `repository` when the chain later runs would send a change meant for
+  // the old folder to a vault the user has since opened somewhere else.
+  const target = repository;
   saveChain = saveChain
     // A failed save must not break the chain for every save after it.
     .catch(() => undefined)
-    .then(() => repository?.save(vault));
+    .then(() => target?.save(vault));
   return saveChain as Promise<void>;
 }
 
@@ -104,6 +129,46 @@ export const useVault = create<VaultState>((set, get) => {
     void persist(next);
   };
 
+  /**
+   * Point the app at another vault folder. `take` decides what the vault there
+   * should be — loaded from it, or the current one written into it.
+   *
+   * Order matters: everything that can fail happens before the swap, so a failed
+   * switch leaves the app exactly where it was, still attached to a working
+   * folder. The remembered path is written before the swap too, so the running
+   * app and the next launch can never disagree about which folder is in use.
+   */
+  const switchTo = async (
+    dir: string,
+    take: (repo: VaultRepository) => Promise<Vault>,
+  ): Promise<VaultSwitchResult> => {
+    try {
+      // Let saves already queued finish against the old folder first.
+      await saveChain.catch(() => undefined);
+
+      const repo = await createVaultRepositoryAt(dir, { mustExist: true });
+      const vault = await take(repo);
+
+      const { rememberVaultDir } = await import("../persistence/vaultLocation");
+      await rememberVaultDir(dir);
+
+      repository = repo;
+      // The app is attached to a vault now, so a remount must not re-run init
+      // and overwrite it with whatever the old location held.
+      initPromise = Promise.resolve();
+      set({
+        vault,
+        status: "ready",
+        repoLabel: repo.label,
+        vaultDir: repo.dir,
+        error: null,
+      });
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, message: e instanceof Error ? e.message : String(e) };
+    }
+  };
+
   const addTx = (tx: Transaction) => {
     const vault = get().vault;
     mutate({ ...vault, transactions: [...vault.transactions, tx] });
@@ -114,6 +179,8 @@ export const useVault = create<VaultState>((set, get) => {
     status: "loading",
     repoLabel: "",
     error: null,
+    vaultDir: null,
+    canChooseVault: isTauri(),
 
     init() {
       // One run per session, however many times this is called.
@@ -124,7 +191,12 @@ export const useVault = create<VaultState>((set, get) => {
           const loaded = await repo.load();
           const vault = loaded ?? seedVault();
           if (loaded === null) await persist(vault);
-          set({ vault, status: "ready", repoLabel: repo.label });
+          set({
+            vault,
+            status: "ready",
+            repoLabel: repo.label,
+            vaultDir: repo.dir,
+          });
         } catch (e) {
           set({ status: "error", error: e instanceof Error ? e.message : String(e) });
           // Let a later call retry after a failure.
@@ -132,6 +204,40 @@ export const useVault = create<VaultState>((set, get) => {
         }
       })();
       return initPromise;
+    },
+
+    async chooseVaultFolder() {
+      const { promptForVaultFolder } = await import("../persistence/vaultLocation");
+      const dir = await promptForVaultFolder();
+      if (dir === null) return null;
+      return inspectVaultFolder(dir);
+    },
+
+    openVaultAt(dir) {
+      return switchTo(dir, async (repo) => {
+        const loaded = await repo.load();
+        if (loaded === null) {
+          throw new Error(
+            "Essa pasta não contém um cofre do Finance Compass. Escolha uma pasta vazia para mover o cofre atual para lá.",
+          );
+        }
+        return loaded;
+      });
+    },
+
+    moveVaultTo(dir) {
+      // Read the current vault before the switch starts, so what gets written is
+      // what the user was looking at when they asked.
+      const current = get().vault;
+      return switchTo(dir, async (repo) => {
+        if ((await repo.load()) !== null) {
+          throw new Error(
+            "Essa pasta já contém um cofre. Abra esse cofre em vez de sobrescrevê-lo.",
+          );
+        }
+        await repo.save(current);
+        return current;
+      });
     },
 
     addAccount({ name, type, openingBalance }) {

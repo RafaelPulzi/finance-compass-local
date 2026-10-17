@@ -16,6 +16,7 @@ import { BudgetsPanel } from "./ui/BudgetsPanel";
 import { DashboardPage } from "./ui/DashboardPage";
 import { ImportPanel } from "./ui/ImportPanel";
 import { TransactionsPanel } from "./ui/TransactionsPanel";
+import { VaultPanel } from "./ui/VaultPanel";
 import { monthLongLabel } from "./ui/charts/format";
 import { todayISO } from "./ui/labels";
 
@@ -24,6 +25,7 @@ const NAV = [
   { to: "/transacoes", label: "Transações" },
   { to: "/contas", label: "Contas" },
   { to: "/orcamentos", label: "Orçamentos" },
+  { to: "/cofre", label: "Cofre" },
 ];
 
 /** Routes whose contents are scoped by the selected month. */
@@ -52,7 +54,21 @@ function Shell() {
   }, [init]);
 
   if (status === "loading") return <Centered>Carregando…</Centered>;
-  if (status === "error") return <Centered>Erro ao abrir o cofre: {error}</Centered>;
+  // A vault folder can be unreachable (external drive, moved folder), so the
+  // error screen has to carry the folder picker — it's the only way out.
+  if (status === "error") {
+    return (
+      <Centered>
+        <div className="w-full max-w-xl space-y-4 p-6">
+          <div className="rounded-xl border border-red-300 bg-red-50 p-4 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-200">
+            <strong>Não foi possível abrir o cofre.</strong>
+            <p className="mt-1">{error}</p>
+          </div>
+          <VaultPanel />
+        </div>
+      </Centered>
+    );
+  }
 
   const netWorth = deriveNetWorth(vault);
   const monthOptions = [...recentMonths(todayISO().slice(0, 7), 12)].reverse();
@@ -138,6 +154,14 @@ function Shell() {
             }
           />
           <Route path="/orcamentos" element={<BudgetsPanel month={month} />} />
+          <Route
+            path="/cofre"
+            element={
+              <div className="max-w-xl">
+                <VaultPanel />
+              </div>
+            }
+          />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>

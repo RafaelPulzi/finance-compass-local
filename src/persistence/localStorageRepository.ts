@@ -11,6 +11,8 @@ const KEY = "finance-compass:vault";
 export function createLocalStorageRepository(): VaultRepository {
   return {
     label: "Browser (localStorage, dev only)",
+    // Not folder-backed: there is nothing to point a folder picker at.
+    dir: null,
     async load() {
       const raw = localStorage.getItem(KEY);
       if (raw === null) return null;

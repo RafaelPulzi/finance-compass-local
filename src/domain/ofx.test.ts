@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseOfx, parseOfxAmount, parseOfxDate } from "./ofx";
+import { decodeOfxBytes, parseOfx, parseOfxAmount, parseOfxDate } from "./ofx";
 
 /** OFX 1.0.2 SGML, the shape Brazilian banks usually export: no closing tags on leaf elements. */
 const SGML = `OFXHEADER:100
@@ -66,6 +66,38 @@ const XML = `<?xml version="1.0" encoding="UTF-8"?>
     </CCSTMTTRNRS>
   </CREDITCARDMSGSRSV1>
 </OFX>`;
+
+describe("decodeOfxBytes", () => {
+  const HEADER_1252 = "OFXHEADER:100\nDATA:OFXSGML\nVERSION:102\nENCODING:USASCII\nCHARSET:1252\n\n";
+
+  /** Bytes for an SGML statement whose header claims 1252, with a body in `encoding`. */
+  function statementBytes(memo: string, encoding: "utf-8" | "windows-1252"): ArrayBuffer {
+    const body = `<OFX><STMTTRN><FITID>1<DTPOSTED>20260105<TRNAMT>-1.00<MEMO>${memo}</STMTTRN></OFX>`;
+    const encoded =
+      encoding === "utf-8"
+        ? new TextEncoder().encode(HEADER_1252 + body)
+        : // Every character used here is in latin1, where 1252 and charCode agree.
+          Uint8Array.from(HEADER_1252 + body, (ch) => ch.charCodeAt(0));
+    return encoded.buffer as ArrayBuffer;
+  }
+
+  it("decodes a file that really is windows-1252, as declared", () => {
+    const text = decodeOfxBytes(statementBytes("SÃO PAULO ALIMENTAÇÃO", "windows-1252"));
+    expect(text).toContain("SÃO PAULO ALIMENTAÇÃO");
+  });
+
+  it("decodes UTF-8 bytes correctly even when the header claims 1252", () => {
+    // Seen in a real bank export: CHARSET:1252 in the header, UTF-8 in the body.
+    // Trusting the header produced "SÃ£O" for every accented description.
+    const text = decodeOfxBytes(statementBytes("SÃO PAULO ALIMENTAÇÃO ÚNICO", "utf-8"));
+    expect(text).toContain("SÃO PAULO ALIMENTAÇÃO ÚNICO");
+    expect(text).not.toMatch(/Ã£|Ã§|Ãº/);
+  });
+
+  it("leaves a pure-ASCII 1252 file unchanged", () => {
+    expect(decodeOfxBytes(statementBytes("PADARIA", "windows-1252"))).toContain("PADARIA");
+  });
+});
 
 describe("parseOfxAmount", () => {
   it("parses plain OFX amounts to signed centavos", () => {

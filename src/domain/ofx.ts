@@ -53,6 +53,18 @@ export function decodeOfxBytes(buffer: ArrayBuffer): string {
   const xmlEncoding = /<\?xml[^>]*encoding=["']([^"']+)["']/i.exec(head)?.[1];
   if (xmlEncoding) label = xmlEncoding.toLowerCase();
 
+  // Some banks declare CHARSET:1252 but actually write UTF-8, which would turn
+  // "SÃO" into "SÃ£O". The header can't be trusted, the bytes can: real
+  // windows-1252 accents are single bytes followed by ASCII, which is never
+  // valid UTF-8, so bytes that do decode strictly as UTF-8 almost certainly are.
+  if (label === "windows-1252" && bytes.some((b) => b >= 0x80)) {
+    try {
+      return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    } catch {
+      // Not UTF-8: it really is windows-1252, as declared.
+    }
+  }
+
   try {
     return new TextDecoder(label).decode(bytes);
   } catch {

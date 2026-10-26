@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { deriveAccountBalance } from "../domain/balances";
 import { centavos } from "../domain/money";
 import type { Transaction, Vault } from "../domain/types";
 
@@ -582,6 +583,256 @@ describe("setTransactionCategoryMany", () => {
     useVault.getState().setTransactionCategoryMany(["nao-existe", "e1"], "cat-market");
     expect(categoryOf(useVault, "e1")).toBe("cat-market");
     expect(useVault.getState().vault.transactions).toHaveLength(6);
+    await vi.waitFor(() => expect(state.saves).toHaveLength(1));
+  });
+});
+
+describe("editTransaction and deleteTransaction", () => {
+  const ACC = "acc-1";
+  const SAVINGS = "acc-2";
+
+  /** A vault with an imported expense, an import record, and a transfer. */
+  async function storeWithTransactions() {
+    const useVault = await freshStore();
+    seedFolder(
+      DEFAULT_DIR,
+      vaultWith({
+        accounts: [
+          { id: ACC, name: "Inter", type: "checking", openingBalance: centavos(10000) },
+          { id: SAVINGS, name: "Poupança", type: "savings", openingBalance: centavos(0) },
+        ],
+        groups: [
+          { id: "g-food", name: "Alimentação", kind: "expense" },
+          { id: "g-in", name: "Renda", kind: "income" },
+        ],
+        categories: [
+          { id: "cat-market", name: "Mercado", groupId: "g-food" },
+          { id: "cat-salary", name: "Salário", groupId: "g-in" },
+        ],
+        transactions: [
+          {
+            id: "e1",
+            kind: "expense",
+            date: "2026-10-02",
+            amount: centavos(30000),
+            description: "MERCADO",
+            accountId: ACC,
+            categoryId: "cat-market",
+            fitid: "bank-1",
+          } satisfies Transaction,
+          {
+            id: "t1",
+            kind: "transfer",
+            date: "2026-10-07",
+            amount: centavos(20000),
+            description: "para poupança",
+            fromAccountId: ACC,
+            toAccountId: SAVINGS,
+          } satisfies Transaction,
+        ],
+        imports: [
+          {
+            id: "imp-1",
+            accountId: ACC,
+            importedAt: "2026-10-16T00:00:00.000Z",
+            fileName: "extrato.ofx",
+            added: 2,
+            skipped: 5,
+          },
+        ],
+      }),
+    );
+    await useVault.getState().init();
+    await vi.waitFor(() => expect(state.inFlight).toBe(0));
+    state.saves = [];
+    return useVault;
+  }
+
+  const txOf = (useVault: Awaited<ReturnType<typeof freshStore>>, id: string) =>
+    useVault.getState().vault.transactions.find((t) => t.id === id);
+
+  it("applies an edit and saves once", async () => {
+    const useVault = await storeWithTransactions();
+    const result = useVault
+      .getState()
+      .editTransaction("e1", { description: "SUPERMERCADO", amount: centavos(12345) });
+
+    expect(result).toEqual({ ok: true });
+    expect(txOf(useVault, "e1")).toMatchObject({
+      description: "SUPERMERCADO",
+      amount: 12345,
+    });
+    await vi.waitFor(() => expect(state.saves).toHaveLength(1));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(state.saves).toHaveLength(1);
+  });
+
+  it("writes the edit to the vault's files", async () => {
+    const useVault = await storeWithTransactions();
+    useVault.getState().editTransaction("e1", { description: "CORRIGIDO" });
+    await vi.waitFor(() => expect(state.saves).toHaveLength(1));
+
+    const onDisk = diskOf(DEFAULT_DIR).transactions as { id: string; description: string }[];
+    expect(onDisk.find((t) => t.id === "e1")?.description).toBe("CORRIGIDO");
+  });
+
+  it("drops a Category the new kind can't use when the kind flips", async () => {
+    const useVault = await storeWithTransactions();
+    expect(useVault.getState().editTransaction("e1", { kind: "income" })).toEqual({
+      ok: true,
+    });
+    expect(txOf(useVault, "e1")).toMatchObject({ kind: "income", categoryId: null });
+    await vi.waitFor(() => expect(state.saves).toHaveLength(1));
+  });
+
+  it("keeps a Category that is still valid for the new kind", async () => {
+    const useVault = await storeWithTransactions();
+    useVault.getState().editTransaction("e1", { kind: "income", categoryId: "cat-salary" });
+    expect(txOf(useVault, "e1")).toMatchObject({
+      kind: "income",
+      categoryId: "cat-salary",
+    });
+    await vi.waitFor(() => expect(state.saves).toHaveLength(1));
+  });
+
+  it("keeps the bank's fitid across an edit, so dedup still recognises the entry", async () => {
+    const useVault = await storeWithTransactions();
+    useVault.getState().editTransaction("e1", { description: "x", kind: "income" });
+    expect(txOf(useVault, "e1")).toHaveProperty("fitid", "bank-1");
+    await vi.waitFor(() => expect(state.saves).toHaveLength(1));
+  });
+
+  it("refuses an invalid edit and leaves the vault untouched", async () => {
+    const useVault = await storeWithTransactions();
+    const before = useVault.getState().vault;
+
+    const result = useVault.getState().editTransaction("e1", { amount: centavos(0) });
+
+    expect(result.ok).toBe(false);
+    expect(useVault.getState().vault).toBe(before);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(state.saves).toHaveLength(0);
+  });
+
+  it("refuses to turn a Transfer into an Expense", async () => {
+    const useVault = await storeWithTransactions();
+    const result = useVault.getState().editTransaction("t1", { kind: "expense" });
+    expect(result.ok).toBe(false);
+    expect(txOf(useVault, "t1")).toHaveProperty("kind", "transfer");
+    await new Promise((r) => setTimeout(r, 20));
+    expect(state.saves).toHaveLength(0);
+  });
+
+  it("reports a missing Transaction without changing anything", async () => {
+    const useVault = await storeWithTransactions();
+    const before = useVault.getState().vault;
+    const result = useVault.getState().editTransaction("nao-existe", { description: "x" });
+
+    expect(result.ok).toBe(false);
+    expect(useVault.getState().vault).toBe(before);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(state.saves).toHaveLength(0);
+  });
+
+  it("deletes a Transaction and leaves the Import record alone", async () => {
+    const useVault = await storeWithTransactions();
+    useVault.getState().deleteTransaction("e1");
+
+    expect(txOf(useVault, "e1")).toBeUndefined();
+    expect(useVault.getState().vault.imports).toEqual([
+      {
+        id: "imp-1",
+        accountId: ACC,
+        importedAt: "2026-10-16T00:00:00.000Z",
+        fileName: "extrato.ofx",
+        added: 2,
+        skipped: 5,
+      },
+    ]);
+    await vi.waitFor(() => expect(state.saves).toHaveLength(1));
+  });
+
+  it("writes the deletion to the vault's files", async () => {
+    const useVault = await storeWithTransactions();
+    useVault.getState().deleteTransaction("t1");
+    await vi.waitFor(() => expect(state.saves).toHaveLength(1));
+
+    const onDisk = diskOf(DEFAULT_DIR).transactions as { id: string }[];
+    expect(onDisk.map((t) => t.id)).toEqual(["e1"]);
+  });
+
+  it("deleting a Transaction that isn't there changes nothing and saves nothing", async () => {
+    const useVault = await storeWithTransactions();
+    const before = useVault.getState().vault;
+    useVault.getState().deleteTransaction("nao-existe");
+
+    expect(useVault.getState().vault).toBe(before);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(state.saves).toHaveLength(0);
+  });
+});
+
+describe("balances after an edit or a delete", () => {
+  /**
+   * Nothing stores a balance: it is always derived from the opening balance plus
+   * the transactions (CONTEXT.md). These assert that editing and deleting need
+   * no balance bookkeeping of their own, which is the thing most likely to get
+   * "helpfully" added later.
+   */
+  const ACC = "acc-1";
+
+  async function storeWithOneExpense() {
+    const useVault = await freshStore();
+    seedFolder(
+      DEFAULT_DIR,
+      vaultWith({
+        accounts: [
+          { id: ACC, name: "Inter", type: "checking", openingBalance: centavos(100000) },
+        ],
+        transactions: [
+          {
+            id: "e1",
+            kind: "expense",
+            date: "2026-10-02",
+            amount: centavos(30000),
+            description: "MERCADO",
+            accountId: ACC,
+            categoryId: null,
+          } satisfies Transaction,
+        ],
+      }),
+    );
+    await useVault.getState().init();
+    await vi.waitFor(() => expect(state.inFlight).toBe(0));
+    state.saves = [];
+    return useVault;
+  }
+
+  const balance = (useVault: Awaited<ReturnType<typeof freshStore>>) => {
+    const vault = useVault.getState().vault;
+    return deriveAccountBalance(vault.accounts[0], vault.transactions);
+  };
+
+  it("follows a changed amount", async () => {
+    const useVault = await storeWithOneExpense();
+    expect(balance(useVault)).toBe(70000); // 1000,00 - 300,00
+
+    useVault.getState().editTransaction("e1", { amount: centavos(50000) });
+    expect(balance(useVault)).toBe(50000);
+    await vi.waitFor(() => expect(state.saves).toHaveLength(1));
+  });
+
+  it("follows a kind flip, which reverses the sign", async () => {
+    const useVault = await storeWithOneExpense();
+    useVault.getState().editTransaction("e1", { kind: "income" });
+    expect(balance(useVault)).toBe(130000); // 1000,00 + 300,00
+    await vi.waitFor(() => expect(state.saves).toHaveLength(1));
+  });
+
+  it("returns to the opening balance when the only Transaction is deleted", async () => {
+    const useVault = await storeWithOneExpense();
+    useVault.getState().deleteTransaction("e1");
+    expect(balance(useVault)).toBe(100000);
     await vi.waitFor(() => expect(state.saves).toHaveLength(1));
   });
 });

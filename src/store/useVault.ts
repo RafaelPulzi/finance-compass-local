@@ -3,6 +3,7 @@ import { newId } from "../domain/id";
 import type { Centavos } from "../domain/money";
 import { seedVault } from "../domain/seed";
 import { type ImportPlan, toTransactions } from "../domain/statementImport";
+import { type TransactionEdit, editedTransaction } from "../domain/transactionEdit";
 import type {
   Account,
   AccountType,
@@ -29,6 +30,9 @@ type Status = "loading" | "ready" | "error";
 
 /** Outcome of changing the vault folder, reported back to the UI that asked. */
 export type VaultSwitchResult = { ok: true } | { ok: false; message: string };
+
+/** Outcome of editing a Transaction, reported back to the form that asked. */
+export type TransactionEditResult = { ok: true } | { ok: false; message: string };
 
 interface VaultState {
   vault: Vault;
@@ -92,6 +96,18 @@ interface VaultState {
    * two Transactions or five hundred.
    */
   setTransactionCategoryMany: (transactionIds: readonly Id[], categoryId: Id) => void;
+  /**
+   * Correct a Transaction. Refuses a change that would break an invariant and
+   * leaves the vault untouched when it does, so an invalid edit can never be
+   * half-applied.
+   */
+  editTransaction: (transactionId: Id, changes: TransactionEdit) => TransactionEditResult;
+  /**
+   * Remove a Transaction for good. The Import record it came from is left alone:
+   * it stays an honest history of what that Import did. Note the `fitid` goes
+   * with the Transaction, so re-importing the same Statement will add it back.
+   */
+  deleteTransaction: (transactionId: Id) => void;
 }
 
 let repository: VaultRepository | null = null;
@@ -334,6 +350,32 @@ export const useVault = create<VaultState>((set, get) => {
           // A Transfer carries no Category, so it's never a target even if asked for.
           wanted.has(tx.id) && tx.kind !== "transfer" ? { ...tx, categoryId } : tx,
         ),
+      });
+    },
+
+    editTransaction(transactionId, changes) {
+      const vault = get().vault;
+      // The domain decides what the Transaction becomes, or refuses; nothing is
+      // written until it says yes, so a refused edit leaves the vault as it was.
+      const outcome = editedTransaction(vault, transactionId, changes);
+      if (!outcome.ok) return { ok: false, message: outcome.message };
+
+      mutate({
+        ...vault,
+        transactions: vault.transactions.map((tx) =>
+          tx.id === transactionId ? outcome.transaction : tx,
+        ),
+      });
+      return { ok: true };
+    },
+
+    deleteTransaction(transactionId) {
+      const vault = get().vault;
+      // Nothing to remove means nothing to save.
+      if (!vault.transactions.some((tx) => tx.id === transactionId)) return;
+      mutate({
+        ...vault,
+        transactions: vault.transactions.filter((tx) => tx.id !== transactionId),
       });
     },
   };

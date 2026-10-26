@@ -9,6 +9,7 @@ import {
 import type { Category, Id, Transaction } from "../domain/types";
 import { useVault } from "../store/useVault";
 import { BulkClassifyBar } from "./BulkClassifyBar";
+import { TransactionEditForm } from "./TransactionEditForm";
 import { TransactionFilters } from "./TransactionFilters";
 import { todayISO } from "./labels";
 
@@ -28,6 +29,8 @@ export function TransactionsPanel() {
   const addTransfer = useVault((s) => s.addTransfer);
   const setTransactionCategory = useVault((s) => s.setTransactionCategory);
   const setTransactionCategoryMany = useVault((s) => s.setTransactionCategoryMany);
+  const editTransaction = useVault((s) => s.editTransaction);
+  const deleteTransaction = useVault((s) => s.deleteTransaction);
 
   const [kind, setKind] = useState<Kind>("expense");
   const [date, setDate] = useState(todayISO());
@@ -41,6 +44,9 @@ export function TransactionsPanel() {
   const [filter, setFilter] = useState<TransactionFilter>(NO_FILTER);
   const [page, setPage] = useState(0);
   const [selected, setSelected] = useState<ReadonlySet<Id>>(new Set());
+  /** At most one row is being edited, and at most one is awaiting a delete confirmation. */
+  const [editingId, setEditingId] = useState<Id | null>(null);
+  const [deletingId, setDeletingId] = useState<Id | null>(null);
 
   /**
    * A new filter is a new result set, so the page the user was on no longer
@@ -52,6 +58,21 @@ export function TransactionsPanel() {
     setFilter(next);
     setPage(0);
     setSelected(new Set());
+    // A row being edited may not survive the new filter, and an open form the
+    // user can no longer see is a change they can't finish or abandon.
+    setEditingId(null);
+    setDeletingId(null);
+  }
+
+  /** Open one row's form, closing anything else that was open. */
+  function startEditing(id: Id) {
+    setEditingId(id);
+    setDeletingId(null);
+  }
+
+  function startDeleting(id: Id) {
+    setDeletingId(id);
+    setEditingId(null);
   }
 
   function toggleSelected(id: Id) {
@@ -277,6 +298,47 @@ export function TransactionsPanel() {
         )}
         {rows.map((tx) => (
           <li key={tx.id} className="flex items-center gap-2 py-2">
+            {editingId === tx.id ? (
+              <TransactionEditForm
+                transaction={tx}
+                accounts={vault.accounts}
+                categoriesByKind={categoriesByKind}
+                onSave={(changes) => {
+                  const result = editTransaction(tx.id, changes);
+                  // A refused edit keeps the form open with its message showing.
+                  if (result.ok) setEditingId(null);
+                  return result;
+                }}
+                onCancel={() => setEditingId(null)}
+              />
+            ) : deletingId === tx.id ? (
+              <div className="flex w-full flex-wrap items-center gap-2 py-1">
+                {/* Naming the Transaction is what makes this a confirmation and
+                    not just a second click. */}
+                <span className="text-slate-700 dark:text-slate-200">
+                  Excluir “{tx.description || "(sem descrição)"}” de {tx.date},{" "}
+                  <span className="font-mono">{formatBRL(tx.amount)}</span>?
+                </span>
+                <button
+                  type="button"
+                  className="rounded-md bg-red-600 px-3 py-1 text-xs font-medium text-white hover:bg-red-700"
+                  onClick={() => {
+                    deleteTransaction(tx.id);
+                    setDeletingId(null);
+                  }}
+                >
+                  Confirmar exclusão
+                </button>
+                <button
+                  type="button"
+                  className="text-xs text-slate-500 underline hover:text-slate-700 dark:hover:text-slate-300"
+                  onClick={() => setDeletingId(null)}
+                >
+                  Cancelar
+                </button>
+              </div>
+            ) : (
+              <>
             {tx.kind === "transfer" ? (
               // A Transfer has no Category, so there is nothing to classify it into.
               <span className="w-4 shrink-0" aria-hidden="true" />
@@ -338,6 +400,26 @@ export function TransactionsPanel() {
               {tx.kind === "income" ? "+" : tx.kind === "expense" ? "-" : ""}
               {formatBRL(tx.amount)}
             </span>
+            <span className="flex shrink-0 gap-2 text-xs text-slate-400">
+              <button
+                type="button"
+                aria-label={`Editar ${tx.description || "transação sem descrição"}`}
+                className="underline hover:text-slate-700 dark:hover:text-slate-200"
+                onClick={() => startEditing(tx.id)}
+              >
+                editar
+              </button>
+              <button
+                type="button"
+                aria-label={`Excluir ${tx.description || "transação sem descrição"}`}
+                className="underline hover:text-red-600"
+                onClick={() => startDeleting(tx.id)}
+              >
+                excluir
+              </button>
+            </span>
+              </>
+            )}
           </li>
         ))}
       </ul>

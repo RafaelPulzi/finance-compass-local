@@ -247,3 +247,148 @@ describe("TransactionsPanel paging", () => {
     expect(first).toHaveTextContent("Compra 59");
   });
 });
+
+describe("TransactionsPanel bulk classification", () => {
+  const vault: Vault = {
+    ...base,
+    transactions: [
+      expense("e1", "2026-10-02", 30000, "UBER TRIP 1", null),
+      expense("e2", "2026-10-03", 20000, "UBER TRIP 2", null),
+      expense("e3", "2026-10-04", 10000, "PADARIA", null),
+      {
+        id: "i1",
+        kind: "income",
+        date: "2026-10-05",
+        amount: centavos(485000),
+        description: "SALARIO",
+        accountId: INTER,
+        categoryId: null,
+      },
+      {
+        id: "t1",
+        kind: "transfer",
+        date: "2026-10-06",
+        amount: centavos(50000),
+        description: "PARA POUPANCA",
+        fromAccountId: INTER,
+        toAccountId: SAVINGS,
+      },
+    ],
+  };
+
+  const categoryOf = (id: string) => {
+    const tx = useVault.getState().vault.transactions.find((t) => t.id === id);
+    return tx === undefined || tx.kind === "transfer" ? undefined : tx.categoryId;
+  };
+
+  it("offers no selection bar until something is selected", () => {
+    show(vault);
+    expect(screen.queryByLabelText("Categoria para as selecionadas")).not.toBeInTheDocument();
+  });
+
+  it("assigns one Category to everything selected, in one step", async () => {
+    show(vault);
+    await userEvent.click(screen.getByLabelText("Selecionar UBER TRIP 1"));
+    await userEvent.click(screen.getByLabelText("Selecionar UBER TRIP 2"));
+    expect(screen.getByText("2 selecionadas")).toBeInTheDocument();
+
+    await userEvent.selectOptions(
+      screen.getByLabelText("Categoria para as selecionadas"),
+      "cat-market",
+    );
+
+    expect(categoryOf("e1")).toBe("cat-market");
+    expect(categoryOf("e2")).toBe("cat-market");
+    expect(categoryOf("e3")).toBeNull();
+  });
+
+  it("clears the selection after assigning", async () => {
+    show(vault);
+    await userEvent.click(screen.getByLabelText("Selecionar PADARIA"));
+    await userEvent.selectOptions(
+      screen.getByLabelText("Categoria para as selecionadas"),
+      "cat-market",
+    );
+    expect(screen.queryByLabelText("Categoria para as selecionadas")).not.toBeInTheDocument();
+  });
+
+  it("selects every match of the filter, across all pages", async () => {
+    show(vault);
+    await userEvent.click(
+      screen.getByLabelText("Selecionar todas as transações do filtro"),
+    );
+    // The Transfer is not selectable: it has no Category to be classified into.
+    expect(screen.getByText("4 selecionadas")).toBeInTheDocument();
+  });
+
+  it("reports the whole result set in the select-all control, not the visible page", async () => {
+    show(vault);
+    expect(screen.getByText("Selecionar todas (4)")).toBeInTheDocument();
+    await userEvent.type(screen.getByLabelText("Buscar descrição"), "uber");
+    expect(screen.getByText("Selecionar todas (2)")).toBeInTheDocument();
+  });
+
+  it("offers no checkbox for a Transfer", () => {
+    show(vault);
+    expect(screen.queryByLabelText("Selecionar PARA POUPANCA")).not.toBeInTheDocument();
+  });
+
+  it("offers only Categories of the selection's kind", async () => {
+    show(vault);
+    await userEvent.click(screen.getByLabelText("Selecionar UBER TRIP 1"));
+    const select = screen.getByLabelText("Categoria para as selecionadas");
+    expect(within(select).getByText("Mercado")).toBeInTheDocument();
+    expect(within(select).queryByText("Salário")).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByLabelText("Selecionar UBER TRIP 1"));
+    await userEvent.click(screen.getByLabelText("Selecionar SALARIO"));
+    const incomeSelect = screen.getByLabelText("Categoria para as selecionadas");
+    expect(within(incomeSelect).getByText("Salário")).toBeInTheDocument();
+    expect(within(incomeSelect).queryByText("Mercado")).not.toBeInTheDocument();
+  });
+
+  it("refuses to classify a selection spanning both kinds, and says why", async () => {
+    show(vault);
+    await userEvent.click(screen.getByLabelText("Selecionar UBER TRIP 1"));
+    await userEvent.click(screen.getByLabelText("Selecionar SALARIO"));
+
+    expect(screen.queryByLabelText("Categoria para as selecionadas")).not.toBeInTheDocument();
+    expect(screen.getByText(/categorias separadas/i)).toBeInTheDocument();
+    expect(screen.getByText("2 selecionadas")).toBeInTheDocument();
+  });
+
+  it("clears the selection without assigning anything", async () => {
+    show(vault);
+    await userEvent.click(screen.getByLabelText("Selecionar UBER TRIP 1"));
+    await userEvent.click(screen.getByRole("button", { name: "limpar seleção" }));
+
+    expect(screen.queryByText("1 selecionada")).not.toBeInTheDocument();
+    expect(categoryOf("e1")).toBeNull();
+  });
+
+  it("drops the selection when the filter changes", async () => {
+    show(vault);
+    await userEvent.click(screen.getByLabelText("Selecionar UBER TRIP 1"));
+    expect(screen.getByText("1 selecionada")).toBeInTheDocument();
+
+    await userEvent.type(screen.getByLabelText("Buscar descrição"), "uber");
+    expect(screen.queryByText("1 selecionada")).not.toBeInTheDocument();
+  });
+
+  it("deselects a row that was selected", async () => {
+    show(vault);
+    const box = screen.getByLabelText("Selecionar PADARIA");
+    await userEvent.click(box);
+    await userEvent.click(box);
+    expect(screen.queryByText("1 selecionada")).not.toBeInTheDocument();
+  });
+
+  it("select-all toggles back off", async () => {
+    show(vault);
+    const all = screen.getByLabelText("Selecionar todas as transações do filtro");
+    await userEvent.click(all);
+    expect(screen.getByText("4 selecionadas")).toBeInTheDocument();
+    await userEvent.click(all);
+    expect(screen.queryByText("4 selecionadas")).not.toBeInTheDocument();
+  });
+});

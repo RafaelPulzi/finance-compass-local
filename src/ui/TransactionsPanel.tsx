@@ -6,8 +6,9 @@ import {
   monthsWithTransactions,
   selectTransactions,
 } from "../domain/transactionQuery";
-import type { Category, Transaction } from "../domain/types";
+import type { Category, Id, Transaction } from "../domain/types";
 import { useVault } from "../store/useVault";
+import { BulkClassifyBar } from "./BulkClassifyBar";
 import { TransactionFilters } from "./TransactionFilters";
 import { todayISO } from "./labels";
 
@@ -26,6 +27,7 @@ export function TransactionsPanel() {
   const addExpense = useVault((s) => s.addExpense);
   const addTransfer = useVault((s) => s.addTransfer);
   const setTransactionCategory = useVault((s) => s.setTransactionCategory);
+  const setTransactionCategoryMany = useVault((s) => s.setTransactionCategoryMany);
 
   const [kind, setKind] = useState<Kind>("expense");
   const [date, setDate] = useState(todayISO());
@@ -38,11 +40,26 @@ export function TransactionsPanel() {
 
   const [filter, setFilter] = useState<TransactionFilter>(NO_FILTER);
   const [page, setPage] = useState(0);
+  const [selected, setSelected] = useState<ReadonlySet<Id>>(new Set());
 
-  /** A new filter is a new result set, so the page the user was on no longer means anything. */
+  /**
+   * A new filter is a new result set, so the page the user was on no longer
+   * means anything — and neither does the selection. Keeping a selection the
+   * user can no longer see is how someone classifies 500 Transactions they
+   * weren't looking at.
+   */
   function changeFilter(next: TransactionFilter) {
     setFilter(next);
     setPage(0);
+    setSelected(new Set());
+  }
+
+  function toggleSelected(id: Id) {
+    setSelected((current) => {
+      const next = new Set(current);
+      if (!next.delete(id)) next.add(id);
+      return next;
+    });
   }
 
   const accountName = useMemo(
@@ -77,6 +94,35 @@ export function TransactionsPanel() {
     currentPage * PAGE_SIZE,
     currentPage * PAGE_SIZE + PAGE_SIZE,
   );
+
+  /** Transfers carry no Category, so they are never selectable for classification. */
+  const selectableIds = useMemo(
+    () =>
+      selection.transactions.filter((tx) => tx.kind !== "transfer").map((tx) => tx.id),
+    [selection],
+  );
+  const allSelected =
+    selectableIds.length > 0 && selectableIds.every((id) => selected.has(id));
+
+  /**
+   * The kind every selected Transaction shares, or "mixed" when the selection
+   * spans both — income and expense Categories are separate, so a mixed
+   * selection has no Category that could apply to all of it.
+   */
+  const selectedKind = useMemo(() => {
+    let kind: "income" | "expense" | null = null;
+    for (const tx of vault.transactions) {
+      if (tx.kind === "transfer" || !selected.has(tx.id)) continue;
+      if (kind === null) kind = tx.kind;
+      else if (kind !== tx.kind) return "mixed" as const;
+    }
+    return kind;
+  }, [vault.transactions, selected]);
+
+  function assignToSelected(categoryId: Id) {
+    setTransactionCategoryMany([...selected], categoryId);
+    setSelected(new Set());
+  }
 
   const uncategorizedCount = vault.transactions.filter(
     (tx) => tx.kind !== "transfer" && tx.categoryId === null,
@@ -195,6 +241,32 @@ export function TransactionsPanel() {
         <span className="font-mono">{formatBRL(selection.expense)}</span>
       </p>
 
+      {/* The count is the filter's whole result set, not the visible page: that is
+          what makes classifying a statement one decision instead of twelve. */}
+      {selectableIds.length > 0 && (
+        <label className="mb-2 flex items-center gap-2 text-xs text-slate-500">
+          <input
+            type="checkbox"
+            aria-label="Selecionar todas as transações do filtro"
+            checked={allSelected}
+            onChange={() =>
+              setSelected(allSelected ? new Set() : new Set(selectableIds))
+            }
+          />
+          Selecionar todas ({selectableIds.length})
+        </label>
+      )}
+
+      {selected.size > 0 && selectedKind !== null && (
+        <BulkClassifyBar
+          selectedCount={selected.size}
+          kind={selectedKind}
+          categories={selectedKind === "mixed" ? [] : categoriesByKind[selectedKind]}
+          onAssign={assignToSelected}
+          onClear={() => setSelected(new Set())}
+        />
+      )}
+
       <ul className="divide-y divide-slate-100 text-sm dark:divide-slate-700">
         {rows.length === 0 && (
           <li className="py-2 text-slate-500">
@@ -204,8 +276,20 @@ export function TransactionsPanel() {
           </li>
         )}
         {rows.map((tx) => (
-          <li key={tx.id} className="flex items-center justify-between gap-2 py-2">
-            <div className="min-w-0">
+          <li key={tx.id} className="flex items-center gap-2 py-2">
+            {tx.kind === "transfer" ? (
+              // A Transfer has no Category, so there is nothing to classify it into.
+              <span className="w-4 shrink-0" aria-hidden="true" />
+            ) : (
+              <input
+                type="checkbox"
+                className="shrink-0"
+                aria-label={`Selecionar ${tx.description || "transação sem descrição"}`}
+                checked={selected.has(tx.id)}
+                onChange={() => toggleSelected(tx.id)}
+              />
+            )}
+            <div className="min-w-0 flex-1">
               <div className="truncate text-slate-800 dark:text-slate-100">
                 {tx.description || "(sem descrição)"}
               </div>

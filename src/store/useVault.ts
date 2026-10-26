@@ -82,6 +82,16 @@ interface VaultState {
   commitImport: (input: { plan: ImportPlan; fileName: string }) => void;
   /** Assign a Category to a Transaction, e.g. one that arrived uncategorized from an import. */
   setTransactionCategory: (transactionId: Id, categoryId: Id) => void;
+  /**
+   * Assign one Category to many Transactions at once — the only practical way to
+   * classify a statement's worth of imported Transactions.
+   *
+   * Deliberately not a loop over `setTransactionCategory`: every mutation
+   * persists the whole vault, so N calls would queue N multi-file writes onto
+   * the save chain. This is one mutation and therefore one save, whether it's
+   * two Transactions or five hundred.
+   */
+  setTransactionCategoryMany: (transactionIds: readonly Id[], categoryId: Id) => void;
 }
 
 let repository: VaultRepository | null = null;
@@ -309,6 +319,20 @@ export const useVault = create<VaultState>((set, get) => {
           tx.id === transactionId && tx.kind !== "transfer"
             ? { ...tx, categoryId }
             : tx,
+        ),
+      });
+    },
+
+    setTransactionCategoryMany(transactionIds, categoryId) {
+      // No ids means no change, and an empty save would still rewrite every file.
+      if (transactionIds.length === 0) return;
+      const wanted = new Set(transactionIds);
+      const vault = get().vault;
+      mutate({
+        ...vault,
+        transactions: vault.transactions.map((tx) =>
+          // A Transfer carries no Category, so it's never a target even if asked for.
+          wanted.has(tx.id) && tx.kind !== "transfer" ? { ...tx, categoryId } : tx,
         ),
       });
     },

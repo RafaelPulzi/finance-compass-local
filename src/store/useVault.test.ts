@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { centavos } from "../domain/money";
-import type { Vault } from "../domain/types";
+import type { Transaction, Vault } from "../domain/types";
 
 /**
  * Repositories that model the real Tauri vault: a folder per vault, each entity
@@ -433,5 +433,155 @@ describe("choosing a vault folder", () => {
     // ...and the stray change landed in the folder it was made in.
     const defaultAccounts = diskOf(DEFAULT_DIR).accounts as { name: string }[];
     expect(defaultAccounts.map((a) => a.name)).toContain("Pertence ao cofre antigo");
+  });
+});
+
+describe("setTransactionCategoryMany", () => {
+  const ACC = "acc-1";
+  const SAVINGS = "acc-2";
+
+  const expense = (id: string, categoryId: string | null): Transaction => ({
+    id,
+    kind: "expense",
+    date: "2026-10-02",
+    amount: centavos(1000),
+    description: id,
+    accountId: ACC,
+    categoryId,
+  });
+
+  const income: Transaction = {
+    id: "i1",
+    kind: "income",
+    date: "2026-10-05",
+    amount: centavos(500000),
+    description: "i1",
+    accountId: ACC,
+    categoryId: null,
+  };
+
+  const transfer: Transaction = {
+    id: "t1",
+    kind: "transfer",
+    date: "2026-10-07",
+    amount: centavos(20000),
+    description: "t1",
+    fromAccountId: ACC,
+    toAccountId: SAVINGS,
+  };
+
+  /** A vault already holding uncategorized transactions, as an import leaves it. */
+  async function storeWithTransactions() {
+    const useVault = await freshStore();
+    seedFolder(
+      DEFAULT_DIR,
+      vaultWith({
+        accounts: [
+          { id: ACC, name: "Inter", type: "checking", openingBalance: centavos(0) },
+          { id: SAVINGS, name: "Poupança", type: "savings", openingBalance: centavos(0) },
+        ],
+        groups: [
+          { id: "g-food", name: "Alimentação", kind: "expense" },
+          { id: "g-in", name: "Renda", kind: "income" },
+        ],
+        categories: [
+          { id: "cat-market", name: "Mercado", groupId: "g-food" },
+          { id: "cat-resto", name: "Restaurante", groupId: "g-food" },
+        ],
+        transactions: [
+          expense("e1", null),
+          expense("e2", null),
+          expense("e3", null),
+          expense("e4", "cat-resto"),
+          income,
+          transfer,
+        ],
+      }),
+    );
+    await useVault.getState().init();
+    await vi.waitFor(() => expect(state.inFlight).toBe(0));
+    state.saves = [];
+    return useVault;
+  }
+
+  const categoryOf = (useVault: Awaited<ReturnType<typeof freshStore>>, id: string) => {
+    const tx = useVault.getState().vault.transactions.find((t) => t.id === id);
+    return tx === undefined || tx.kind === "transfer" ? undefined : tx.categoryId;
+  };
+
+  it("classifies every Transaction it was given and leaves the rest alone", async () => {
+    const useVault = await storeWithTransactions();
+    useVault.getState().setTransactionCategoryMany(["e1", "e2"], "cat-market");
+
+    expect(categoryOf(useVault, "e1")).toBe("cat-market");
+    expect(categoryOf(useVault, "e2")).toBe("cat-market");
+    expect(categoryOf(useVault, "e3")).toBeNull();
+    expect(categoryOf(useVault, "i1")).toBeNull();
+    // Let this test's save land before the next one counts saves of its own.
+    await vi.waitFor(() => expect(state.saves).toHaveLength(1));
+  });
+
+  it("saves once however many Transactions it changes", async () => {
+    const useVault = await storeWithTransactions();
+    state.saveDelayMs = 5;
+    useVault.getState().setTransactionCategoryMany(
+      ["e1", "e2", "e3", "e4"],
+      "cat-market",
+    );
+
+    await vi.waitFor(() => expect(state.saves).toHaveLength(1));
+    // Nothing else is queued behind it: a loop over the single-transaction
+    // setter would be four whole-vault writes on the save chain.
+    await new Promise((r) => setTimeout(r, 30));
+    expect(state.saves).toHaveLength(1);
+    expect(state.maxInFlight).toBe(1);
+  });
+
+  it("writes the classification to the vault's files", async () => {
+    const useVault = await storeWithTransactions();
+    useVault.getState().setTransactionCategoryMany(["e1", "e3"], "cat-market");
+    // Wait for the save to finish, not for inFlight to be 0 — it already is,
+    // since the save is queued on the chain and hasn't started yet.
+    await vi.waitFor(() => expect(state.saves).toHaveLength(1));
+
+    const onDisk = diskOf(DEFAULT_DIR).transactions as { id: string; categoryId?: string }[];
+    expect(onDisk.find((t) => t.id === "e1")?.categoryId).toBe("cat-market");
+    expect(onDisk.find((t) => t.id === "e3")?.categoryId).toBe("cat-market");
+  });
+
+  it("reclassifies Transactions that already had a Category", async () => {
+    const useVault = await storeWithTransactions();
+    useVault.getState().setTransactionCategoryMany(["e4"], "cat-market");
+    expect(categoryOf(useVault, "e4")).toBe("cat-market");
+    await vi.waitFor(() => expect(state.saves).toHaveLength(1));
+  });
+
+  it("never gives a Transfer a Category, even if its id is passed", async () => {
+    const useVault = await storeWithTransactions();
+    useVault.getState().setTransactionCategoryMany(["t1", "e1"], "cat-market");
+
+    const t = useVault.getState().vault.transactions.find((x) => x.id === "t1");
+    expect(t?.kind).toBe("transfer");
+    expect(t).not.toHaveProperty("categoryId");
+    expect(categoryOf(useVault, "e1")).toBe("cat-market");
+    await vi.waitFor(() => expect(state.saves).toHaveLength(1));
+  });
+
+  it("changes nothing and saves nothing when given no ids", async () => {
+    const useVault = await storeWithTransactions();
+    const before = useVault.getState().vault;
+    useVault.getState().setTransactionCategoryMany([], "cat-market");
+
+    expect(useVault.getState().vault).toBe(before);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(state.saves).toHaveLength(0);
+  });
+
+  it("ignores ids the vault doesn't have", async () => {
+    const useVault = await storeWithTransactions();
+    useVault.getState().setTransactionCategoryMany(["nao-existe", "e1"], "cat-market");
+    expect(categoryOf(useVault, "e1")).toBe("cat-market");
+    expect(useVault.getState().vault.transactions).toHaveLength(6);
+    await vi.waitFor(() => expect(state.saves).toHaveLength(1));
   });
 });

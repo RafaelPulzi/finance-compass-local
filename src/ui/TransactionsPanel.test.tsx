@@ -392,3 +392,210 @@ describe("TransactionsPanel bulk classification", () => {
     expect(screen.queryByText("4 selecionadas")).not.toBeInTheDocument();
   });
 });
+
+describe("TransactionsPanel editing and deleting", () => {
+  const vault: Vault = {
+    ...base,
+    transactions: [
+      expense("e1", "2026-10-02", 30000, "MERCADO", "cat-market"),
+      expense("e2", "2026-10-03", 4500, "SEM CATEGORIA", null),
+      {
+        id: "t1",
+        kind: "transfer",
+        date: "2026-10-06",
+        amount: centavos(50000),
+        description: "PARA POUPANCA",
+        fromAccountId: INTER,
+        toAccountId: SAVINGS,
+      },
+    ],
+    imports: [
+      {
+        id: "imp-1",
+        accountId: INTER,
+        importedAt: "2026-10-16T00:00:00.000Z",
+        fileName: "extrato.ofx",
+        added: 2,
+        skipped: 5,
+      },
+    ],
+  };
+
+  const txOf = (id: string) =>
+    useVault.getState().vault.transactions.find((t) => t.id === id);
+
+  it("round-trips a Transaction's values into the form", async () => {
+    show(vault);
+    await userEvent.click(screen.getByLabelText("Editar MERCADO"));
+
+    expect(screen.getByLabelText("Editar data")).toHaveValue("2026-10-02");
+    expect(screen.getByLabelText("Editar valor")).toHaveValue("300,00");
+    expect(screen.getByLabelText("Editar descrição")).toHaveValue("MERCADO");
+    expect(screen.getByLabelText("Editar tipo")).toHaveValue("expense");
+    expect(screen.getByLabelText("Editar conta")).toHaveValue(INTER);
+    expect(screen.getByLabelText("Editar categoria")).toHaveValue("cat-market");
+  });
+
+  it("saves a corrected description, amount and date", async () => {
+    show(vault);
+    await userEvent.click(screen.getByLabelText("Editar MERCADO"));
+
+    const description = screen.getByLabelText("Editar descrição");
+    await userEvent.clear(description);
+    await userEvent.type(description, "SUPERMERCADO SAO JOSE");
+    const amount = screen.getByLabelText("Editar valor");
+    await userEvent.clear(amount);
+    await userEvent.type(amount, "321,99");
+    await userEvent.click(screen.getByRole("button", { name: "Salvar" }));
+
+    expect(txOf("e1")).toMatchObject({
+      description: "SUPERMERCADO SAO JOSE",
+      amount: 32199,
+    });
+    // The form closes on success.
+    expect(screen.queryByLabelText("Editar descrição")).not.toBeInTheDocument();
+  });
+
+  it("swaps an Expense to an Income and drops the Category that no longer fits", async () => {
+    show(vault);
+    await userEvent.click(screen.getByLabelText("Editar MERCADO"));
+    await userEvent.selectOptions(screen.getByLabelText("Editar tipo"), "income");
+    await userEvent.click(screen.getByRole("button", { name: "Salvar" }));
+
+    expect(txOf("e1")).toMatchObject({ kind: "income", categoryId: null });
+  });
+
+  it("offers only the chosen kind's Categories as the kind changes", async () => {
+    show(vault);
+    await userEvent.click(screen.getByLabelText("Editar MERCADO"));
+    const category = screen.getByLabelText("Editar categoria");
+    expect(within(category).getByText("Mercado")).toBeInTheDocument();
+
+    await userEvent.selectOptions(screen.getByLabelText("Editar tipo"), "income");
+    expect(within(category).getByText("Salário")).toBeInTheDocument();
+    expect(within(category).queryByText("Mercado")).not.toBeInTheDocument();
+  });
+
+  it("clears a Category back to Uncategorized", async () => {
+    show(vault);
+    await userEvent.click(screen.getByLabelText("Editar MERCADO"));
+    await userEvent.selectOptions(screen.getByLabelText("Editar categoria"), "");
+    await userEvent.click(screen.getByRole("button", { name: "Salvar" }));
+
+    expect(txOf("e1")).toHaveProperty("categoryId", null);
+  });
+
+  it("offers a Transfer two Accounts and no Category or kind", async () => {
+    show(vault);
+    await userEvent.click(screen.getByLabelText("Editar PARA POUPANCA"));
+
+    expect(screen.getByLabelText("Editar conta de origem")).toHaveValue(INTER);
+    expect(screen.getByLabelText("Editar conta de destino")).toHaveValue(SAVINGS);
+    expect(screen.queryByLabelText("Editar categoria")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Editar tipo")).not.toBeInTheDocument();
+  });
+
+  it("reports an unparseable amount and writes nothing", async () => {
+    show(vault);
+    await userEvent.click(screen.getByLabelText("Editar MERCADO"));
+    const amount = screen.getByLabelText("Editar valor");
+    await userEvent.clear(amount);
+    await userEvent.type(amount, "abc");
+    await userEvent.click(screen.getByRole("button", { name: "Salvar" }));
+
+    expect(screen.getByText("Informe um valor válido.")).toBeInTheDocument();
+    expect(txOf("e1")).toMatchObject({ amount: 30000 });
+    // The form stays open so the mistake can be corrected.
+    expect(screen.getByLabelText("Editar valor")).toBeInTheDocument();
+  });
+
+  it("reports a refusal from the store and keeps the form open", async () => {
+    show(vault);
+    await userEvent.click(screen.getByLabelText("Editar MERCADO"));
+    const amount = screen.getByLabelText("Editar valor");
+    await userEvent.clear(amount);
+    await userEvent.type(amount, "0,00");
+    await userEvent.click(screen.getByRole("button", { name: "Salvar" }));
+
+    expect(screen.getByText("Informe um valor maior que zero.")).toBeInTheDocument();
+    expect(txOf("e1")).toMatchObject({ amount: 30000 });
+  });
+
+  it("cancels an edit without changing anything", async () => {
+    show(vault);
+    await userEvent.click(screen.getByLabelText("Editar MERCADO"));
+    const description = screen.getByLabelText("Editar descrição");
+    await userEvent.clear(description);
+    await userEvent.type(description, "NAO DEVE SALVAR");
+    await userEvent.click(screen.getByRole("button", { name: "Cancelar" }));
+
+    expect(txOf("e1")).toMatchObject({ description: "MERCADO" });
+    expect(screen.queryByLabelText("Editar descrição")).not.toBeInTheDocument();
+  });
+
+  describe("deleting", () => {
+    it("asks first, naming the Transaction", async () => {
+      show(vault);
+      await userEvent.click(screen.getByLabelText("Excluir MERCADO"));
+
+      const prompt = screen.getByText(/Excluir .MERCADO. de 2026-10-02/);
+      expect(prompt).toBeInTheDocument();
+      expect(prompt).toHaveTextContent("300,00");
+      // Nothing is gone yet.
+      expect(txOf("e1")).toBeDefined();
+    });
+
+    it("removes the Transaction once confirmed", async () => {
+      show(vault);
+      await userEvent.click(screen.getByLabelText("Excluir MERCADO"));
+      await userEvent.click(screen.getByRole("button", { name: "Confirmar exclusão" }));
+
+      expect(txOf("e1")).toBeUndefined();
+      expect(useVault.getState().vault.transactions).toHaveLength(2);
+    });
+
+    it("leaves the Import record alone", async () => {
+      show(vault);
+      await userEvent.click(screen.getByLabelText("Excluir MERCADO"));
+      await userEvent.click(screen.getByRole("button", { name: "Confirmar exclusão" }));
+
+      expect(useVault.getState().vault.imports).toMatchObject([
+        { id: "imp-1", added: 2, skipped: 5 },
+      ]);
+    });
+
+    it("cancels without deleting", async () => {
+      show(vault);
+      await userEvent.click(screen.getByLabelText("Excluir MERCADO"));
+      await userEvent.click(screen.getByRole("button", { name: "Cancelar" }));
+
+      expect(txOf("e1")).toBeDefined();
+      expect(screen.queryByText(/Excluir .MERCADO./)).not.toBeInTheDocument();
+    });
+
+    it("deletes a Transfer too", async () => {
+      show(vault);
+      await userEvent.click(screen.getByLabelText("Excluir PARA POUPANCA"));
+      await userEvent.click(screen.getByRole("button", { name: "Confirmar exclusão" }));
+
+      expect(txOf("t1")).toBeUndefined();
+    });
+  });
+
+  it("opening an edit closes an open delete confirmation", async () => {
+    show(vault);
+    await userEvent.click(screen.getByLabelText("Excluir MERCADO"));
+    await userEvent.click(screen.getByLabelText("Editar SEM CATEGORIA"));
+
+    expect(screen.queryByText(/Excluir .MERCADO./)).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Editar descrição")).toHaveValue("SEM CATEGORIA");
+  });
+
+  it("closes an open form when the filter changes", async () => {
+    show(vault);
+    await userEvent.click(screen.getByLabelText("Editar MERCADO"));
+    await userEvent.type(screen.getByLabelText("Buscar descrição"), "mercado");
+
+    expect(screen.queryByLabelText("Editar descrição")).not.toBeInTheDocument();
+  });
+});

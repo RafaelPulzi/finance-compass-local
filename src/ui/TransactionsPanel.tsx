@@ -1,10 +1,24 @@
 import { type FormEvent, useMemo, useState } from "react";
 import { formatBRL, parseBRL } from "../domain/money";
+import {
+  NO_FILTER,
+  type TransactionFilter,
+  monthsWithTransactions,
+  selectTransactions,
+} from "../domain/transactionQuery";
 import type { Category, Transaction } from "../domain/types";
 import { useVault } from "../store/useVault";
+import { TransactionFilters } from "./TransactionFilters";
 import { todayISO } from "./labels";
 
 type Kind = Transaction["kind"];
+
+/**
+ * How many Transactions one page of the list shows. A Vault holding a couple of
+ * years of imported Statements runs to several hundred, which is well within
+ * what the DOM handles in pages — no windowing library earns its place here.
+ */
+const PAGE_SIZE = 50;
 
 export function TransactionsPanel() {
   const vault = useVault((s) => s.vault);
@@ -21,6 +35,15 @@ export function TransactionsPanel() {
   const [toAccountId, setToAccountId] = useState("");
   const [categoryId, setCategoryId] = useState("");
   const [error, setError] = useState<string | null>(null);
+
+  const [filter, setFilter] = useState<TransactionFilter>(NO_FILTER);
+  const [page, setPage] = useState(0);
+
+  /** A new filter is a new result set, so the page the user was on no longer means anything. */
+  function changeFilter(next: TransactionFilter) {
+    setFilter(next);
+    setPage(0);
+  }
 
   const accountName = useMemo(
     () => new Map(vault.accounts.map((a) => [a.id, a.name])),
@@ -44,9 +67,16 @@ export function TransactionsPanel() {
 
   const categoryOptions = kind === "transfer" ? [] : categoriesByKind[kind];
 
-  const recent = [...vault.transactions]
-    .sort((a, b) => (a.date < b.date ? 1 : -1))
-    .slice(0, 15);
+  const months = useMemo(() => monthsWithTransactions(vault), [vault]);
+  const selection = useMemo(() => selectTransactions(vault, filter), [vault, filter]);
+
+  const pageCount = Math.max(1, Math.ceil(selection.count / PAGE_SIZE));
+  // Classifying or deleting can shrink the result under the page being viewed.
+  const currentPage = Math.min(page, pageCount - 1);
+  const rows = selection.transactions.slice(
+    currentPage * PAGE_SIZE,
+    currentPage * PAGE_SIZE + PAGE_SIZE,
+  );
 
   const uncategorizedCount = vault.transactions.filter(
     (tx) => tx.kind !== "transfer" && tx.categoryId === null,
@@ -148,11 +178,32 @@ export function TransactionsPanel() {
         {error && <p className="col-span-2 text-xs text-red-600">{error}</p>}
       </form>
 
+      <TransactionFilters
+        filter={filter}
+        onChange={changeFilter}
+        accounts={vault.accounts}
+        categories={vault.categories}
+        months={months}
+      />
+
+      {/* What the filter is actually showing, so a narrowed list is never mistaken for the whole Vault. */}
+      <p className="mb-2 text-xs text-slate-500" data-testid="selection-summary">
+        {selection.count === 1 ? "1 transação" : `${selection.count} transações`}
+        {" · Receitas "}
+        <span className="font-mono">{formatBRL(selection.income)}</span>
+        {" · Despesas "}
+        <span className="font-mono">{formatBRL(selection.expense)}</span>
+      </p>
+
       <ul className="divide-y divide-slate-100 text-sm dark:divide-slate-700">
-        {recent.length === 0 && (
-          <li className="py-2 text-slate-500">Nenhuma transação ainda.</li>
+        {rows.length === 0 && (
+          <li className="py-2 text-slate-500">
+            {vault.transactions.length === 0
+              ? "Nenhuma transação ainda."
+              : "Nenhuma transação corresponde aos filtros."}
+          </li>
         )}
-        {recent.map((tx) => (
+        {rows.map((tx) => (
           <li key={tx.id} className="flex items-center justify-between gap-2 py-2">
             <div className="min-w-0">
               <div className="truncate text-slate-800 dark:text-slate-100">
@@ -169,6 +220,7 @@ export function TransactionsPanel() {
                   <span className="flex items-center gap-1">
                     {tx.date} ·
                     <select
+                      aria-label={`Categoria de ${tx.description || "transação sem descrição"}`}
                       className="rounded border border-amber-400 bg-amber-50 px-1 py-0.5 text-xs text-amber-900 dark:bg-amber-950 dark:text-amber-200"
                       value=""
                       onChange={(e) =>
@@ -205,6 +257,30 @@ export function TransactionsPanel() {
           </li>
         ))}
       </ul>
+
+      {pageCount > 1 && (
+        <div className="mt-3 flex items-center justify-between text-xs text-slate-500">
+          <button
+            type="button"
+            className="rounded-md border border-slate-300 px-2 py-1 disabled:opacity-40 dark:border-slate-600"
+            disabled={currentPage === 0}
+            onClick={() => setPage(currentPage - 1)}
+          >
+            Anterior
+          </button>
+          <span>
+            Página {currentPage + 1} de {pageCount}
+          </span>
+          <button
+            type="button"
+            className="rounded-md border border-slate-300 px-2 py-1 disabled:opacity-40 dark:border-slate-600"
+            disabled={currentPage >= pageCount - 1}
+            onClick={() => setPage(currentPage + 1)}
+          >
+            Próxima
+          </button>
+        </div>
+      )}
     </section>
   );
 }

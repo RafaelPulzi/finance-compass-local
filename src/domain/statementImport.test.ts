@@ -124,3 +124,73 @@ describe("toTransactions", () => {
     expect(txs.every((t) => t.kind !== "transfer")).toBe(true);
   });
 });
+
+describe("dedup against Transfers recovered from imported entries", () => {
+  /**
+   * The regression the v3 `recoveredFrom` field exists for. Converting a pair into a
+   * Transfer removes the two entries, so without this the bank's own ids look
+   * new on the next import and the conversion silently undoes itself.
+   */
+  const ACC = "acc-1";
+  const OTHER = "acc-2";
+
+  const transferFrom = (
+    recoveredFrom: { fitid: string; accountId: string }[],
+  ): Transaction => ({
+    id: "t1",
+    kind: "transfer",
+    date: "2026-10-07",
+    amount: centavos(20000),
+    description: "para poupança",
+    fromAccountId: ACC,
+    toAccountId: OTHER,
+    recoveredFrom,
+  });
+
+  /** One side of the move, as the bank re-sends it on the next import. */
+  const movedEntry = (fitid: string) => entry(fitid, -20000, "2026-10-07");
+
+  it("skips an entry whose id a Transfer recorded for this Account", () => {
+    const plan = planImport([movedEntry("bank-1")], ACC, [
+      transferFrom([{ fitid: "bank-1", accountId: ACC }]),
+    ]);
+
+    expect(plan.additions).toHaveLength(0);
+    expect(plan.duplicates.map((e) => e.fitid)).toEqual(["bank-1"]);
+  });
+
+  it("skips both sides when both were recorded, each on its own Account", () => {
+    const existing = [
+      transferFrom([
+        { fitid: "bank-out", accountId: ACC },
+        { fitid: "bank-in", accountId: OTHER },
+      ]),
+    ];
+
+    expect(planImport([movedEntry("bank-out")], ACC, existing).additions).toHaveLength(0);
+    expect(planImport([movedEntry("bank-in")], OTHER, existing).additions).toHaveLength(0);
+  });
+
+  it("keeps the per-Account scoping: the same id on another Account is not a duplicate", () => {
+    const plan = planImport([movedEntry("bank-1")], OTHER, [
+      transferFrom([{ fitid: "bank-1", accountId: ACC }]),
+    ]);
+
+    expect(plan.additions.map((e) => e.fitid)).toEqual(["bank-1"]);
+    expect(plan.duplicates).toHaveLength(0);
+  });
+
+  it("ignores a hand-entered Transfer, which was recovered from nothing", () => {
+    const handEntered: Transaction = {
+      id: "t2",
+      kind: "transfer",
+      date: "2026-10-07",
+      amount: centavos(20000),
+      description: "digitada à mão",
+      fromAccountId: ACC,
+      toAccountId: OTHER,
+    };
+
+    expect(planImport([movedEntry("bank-1")], ACC, [handEntered]).additions).toHaveLength(1);
+  });
+});

@@ -29,9 +29,13 @@ export interface VaultFolderPick {
 /**
  * Read a vault from stored JSON, upgrading older schema versions on the way in.
  *
- * v1 -> v2 needs no data rewriting: Import records simply didn't exist, and the
- * fields v2 added to Transactions (`fitid`, a nullable `categoryId`) are both
- * satisfied by v1 rows, which always carried a real category and no fitid.
+ * No version so far has needed data rewriting, only missing fields filled in.
+ * v1 -> v2: Import records simply didn't exist, and the fields v2 added to
+ * Transactions (`fitid`, a nullable `categoryId`) are both satisfied by v1 rows,
+ * which always carried a real category and no fitid.
+ * v2 -> v3: a Transfer's `recoveredFrom` is absent, which is exactly right — a v2
+ * Transfer was entered by hand and came from no Statement — and there are no
+ * dismissed candidate pairs yet.
  * A vault written by a *newer* app version is refused rather than silently
  * half-read, so an unknown field can't be dropped on the next save.
  */
@@ -54,6 +58,7 @@ export function parseVault(raw: unknown): Vault {
     transactions: stored.transactions ?? [],
     budgets: stored.budgets ?? [],
     imports: stored.imports ?? [],
+    dismissedTransferPairs: stored.dismissedTransferPairs ?? [],
   };
 }
 

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { centavos } from "../domain/money";
+import { VAULT_SCHEMA_VERSION } from "../domain/types";
 import type { Vault } from "../domain/types";
 
 /** An in-memory stand-in for the shell's filesystem, keyed by absolute path. */
@@ -34,13 +35,14 @@ const DIR = "/d/Financas/Cofre";
 
 function vaultWith(partial: Partial<Vault> = {}): Vault {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     accounts: [],
     groups: [],
     categories: [],
     transactions: [],
     budgets: [],
     imports: [],
+    dismissedTransferPairs: [],
     ...partial,
   };
 }
@@ -59,6 +61,7 @@ describe("createTauriRepository", () => {
       `${DIR}/accounts.json`,
       `${DIR}/budgets.json`,
       `${DIR}/categories.json`,
+      `${DIR}/dismissed-transfers.json`,
       `${DIR}/groups.json`,
       `${DIR}/imports.json`,
       `${DIR}/meta.json`,
@@ -124,9 +127,65 @@ describe("createTauriRepository", () => {
     fs.files.set(`${DIR}/accounts.json`, JSON.stringify([]));
 
     const loaded = await createTauriRepository(DIR).load();
-    expect(loaded?.schemaVersion).toBe(2);
+    expect(loaded?.schemaVersion).toBe(VAULT_SCHEMA_VERSION);
     // v1 had no imports file at all.
     expect(loaded?.imports).toEqual([]);
+  });
+
+  it("migrates a v2 vault, leaving its Transfers with no recovered entries", async () => {
+    // A v2 Transfer was always entered by hand, so having no recovered entries is not
+    // missing data — it is the truth about where it came from (ADR-0006).
+    fs.dirs.add(DIR);
+    fs.files.set(`${DIR}/meta.json`, JSON.stringify({ schemaVersion: 2 }));
+    fs.files.set(
+      `${DIR}/transactions.json`,
+      JSON.stringify([
+        {
+          id: "t1",
+          kind: "transfer",
+          date: "2026-10-07",
+          amount: 20000,
+          description: "para poupanca",
+          fromAccountId: "a1",
+          toAccountId: "a2",
+        },
+      ]),
+    );
+
+    const loaded = await createTauriRepository(DIR).load();
+    expect(loaded?.schemaVersion).toBe(3);
+    expect(loaded?.transactions[0]).not.toHaveProperty("recoveredFrom");
+    // v2 had no dismissed-transfers file at all.
+    expect(loaded?.dismissedTransferPairs).toEqual([]);
+  });
+
+  it("round-trips a Transfer's recovered entries and a dismissed pair", async () => {
+    fs.dirs.add(DIR);
+    const repo = createTauriRepository(DIR);
+    const vault = vaultWith({
+      transactions: [
+        {
+          id: "t1",
+          kind: "transfer",
+          date: "2026-10-07",
+          amount: centavos(20000),
+          description: "para poupanca",
+          fromAccountId: "a1",
+          toAccountId: "a2",
+          recoveredFrom: [
+            { fitid: "bank-out", accountId: "a1" },
+            { fitid: "bank-in", accountId: "a2" },
+          ],
+        },
+      ],
+      dismissedTransferPairs: [{ transactionIds: ["e1", "i1"] }],
+    });
+
+    await repo.save(vault);
+    expect(await repo.load()).toEqual(vault);
+    expect(fs.files.get(`${DIR}/dismissed-transfers.json`) ?? "").toContain(
+      '"transactionIds"',
+    );
   });
 
   it("refuses a vault written by a newer schema version", async () => {

@@ -4,6 +4,7 @@ import type {
   Account,
   Budget,
   Category,
+  DismissedTransferPair,
   Group,
   ImportRecord,
   Transaction,
@@ -31,6 +32,7 @@ const NAMES = {
   transactions: "transactions.json",
   budgets: "budgets.json",
   imports: "imports.json",
+  dismissedTransferPairs: "dismissed-transfers.json",
 } as const;
 
 type FilePaths = Record<keyof typeof NAMES, string>;
@@ -102,6 +104,11 @@ export function createTauriRepository(
         transactions: await readJson<Transaction[]>(p.transactions, []),
         budgets: await readJson<Budget[]>(p.budgets, []),
         imports: await readJson<ImportRecord[]>(p.imports, []),
+        // Absent in a v2 vault, which simply had no dismissals to remember.
+        dismissedTransferPairs: await readJson<DismissedTransferPair[]>(
+          p.dismissedTransferPairs,
+          [],
+        ),
       });
     },
 
@@ -115,6 +122,7 @@ export function createTauriRepository(
       await writeJson(p.transactions, vault.transactions);
       await writeJson(p.budgets, vault.budgets);
       await writeJson(p.imports, vault.imports);
+      await writeJson(p.dismissedTransferPairs, vault.dismissedTransferPairs);
     },
   };
 }

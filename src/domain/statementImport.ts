@@ -25,7 +25,15 @@ export function planImport(
 ): ImportPlan {
   const seen = new Set<string>();
   for (const tx of existing) {
-    if (tx.kind === "transfer") continue;
+    if (tx.kind === "transfer") {
+      // A Transfer the user recovered from imported entries no longer *contains*
+      // those entries, but the bank still has them and will send them again. The
+      // ids it recorded are what keeps a re-import from undoing the conversion.
+      for (const imported of tx.recoveredFrom ?? []) {
+        if (imported.accountId === accountId) seen.add(imported.fitid);
+      }
+      continue;
+    }
     if (tx.accountId === accountId && tx.fitid !== undefined) {
       seen.add(tx.fitid);
     }

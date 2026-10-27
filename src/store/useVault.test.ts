@@ -57,6 +57,7 @@ const ENTITIES = [
   "transactions",
   "budgets",
   "imports",
+  "dismissedTransferPairs",
 ] as const;
 
 const yieldToOtherTasks = () => new Promise((r) => setTimeout(r, state.saveDelayMs));
@@ -71,13 +72,14 @@ function seedFolder(dir: string, vault: Vault): void {
 
 function vaultWith(partial: Partial<Vault>): Vault {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     accounts: [],
     groups: [],
     categories: [],
     transactions: [],
     budgets: [],
     imports: [],
+    dismissedTransferPairs: [],
     ...partial,
   };
 }

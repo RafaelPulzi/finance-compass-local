@@ -599,3 +599,237 @@ describe("TransactionsPanel editing and deleting", () => {
     expect(screen.queryByLabelText("Editar descrição")).not.toBeInTheDocument();
   });
 });
+
+describe("marking an entry as a Transfer", () => {
+  const imported = (
+    id: string,
+    kind: "income" | "expense",
+    description: string,
+    fitid?: string,
+  ): Transaction => ({
+    id,
+    kind,
+    date: "2026-10-02",
+    amount: centavos(30000),
+    description,
+    accountId: INTER,
+    categoryId: null,
+    ...(fitid === undefined ? {} : { fitid }),
+  });
+
+  const withEntry = (tx: Transaction): Vault => ({ ...base, transactions: [tx] });
+
+  /** Open the marking form on the only row. */
+  async function openForm(description: string) {
+    const user = userEvent.setup();
+    await user.click(
+      screen.getByRole("button", { name: `Marcar ${description} como transferência` }),
+    );
+    return user;
+  }
+
+  it("offers the action on an Income or an Expense", () => {
+    show(withEntry(imported("e1", "expense", "APLICACAO CDB", "FIT-1")));
+
+    expect(
+      screen.getByRole("button", { name: "Marcar APLICACAO CDB como transferência" }),
+    ).toBeInTheDocument();
+  });
+
+  it("does not offer it on a Transfer, which is already one", () => {
+    show({
+      ...base,
+      transactions: [
+        {
+          id: "t1",
+          kind: "transfer",
+          date: "2026-10-02",
+          amount: centavos(30000),
+          description: "JA MOVIDO",
+          fromAccountId: INTER,
+          toAccountId: SAVINGS,
+        },
+      ],
+    });
+
+    expect(
+      screen.queryByRole("button", { name: /como transferência/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("asks only for the other Account, never the direction", async () => {
+    show(withEntry(imported("e1", "expense", "APLICACAO CDB", "FIT-1")));
+    await openForm("APLICACAO CDB");
+
+    expect(screen.getByLabelText("Conta de destino")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Conta de origem")).not.toBeInTheDocument();
+  });
+
+  it("asks for the origin when the entry was an Income", async () => {
+    show(withEntry(imported("i1", "income", "RESGATE CDB", "FIT-2")));
+    await openForm("RESGATE CDB");
+
+    expect(screen.getByLabelText("Conta de origem")).toBeInTheDocument();
+  });
+
+  it("leaves out the entry's own Account, so it cannot be chosen", async () => {
+    show(withEntry(imported("e1", "expense", "APLICACAO CDB", "FIT-1")));
+    await openForm("APLICACAO CDB");
+
+    const options = within(screen.getByLabelText("Conta de destino")).getAllByRole(
+      "option",
+    );
+    const names = options.map((o) => o.textContent);
+    expect(names).toContain("Poupança");
+    expect(names).not.toContain("Banco Inter");
+  });
+
+  it("says which balance will move before the click", async () => {
+    show(withEntry(imported("e1", "expense", "APLICACAO CDB", "FIT-1")));
+    const user = await openForm("APLICACAO CDB");
+
+    await user.selectOptions(screen.getByLabelText("Conta de destino"), SAVINGS);
+
+    expect(screen.getByText(/O saldo de Poupança aumenta em/)).toBeInTheDocument();
+    expect(screen.getByText(/o saldo de Banco Inter não muda/)).toBeInTheDocument();
+  });
+
+  it("converts the entry, which then shows both Account names", async () => {
+    show(withEntry(imported("e1", "expense", "APLICACAO CDB", "FIT-1")));
+    const user = await openForm("APLICACAO CDB");
+
+    await user.selectOptions(screen.getByLabelText("Conta de destino"), SAVINGS);
+    await user.click(screen.getByRole("button", { name: "Marcar como transferência" }));
+
+    expect(listText()).toContain("Banco Inter → Poupança");
+    expect(useVault.getState().vault.transactions[0]).toMatchObject({
+      kind: "transfer",
+      recoveredFrom: [{ fitid: "FIT-1", accountId: INTER }],
+    });
+  });
+
+  it("requires an Account, reporting it rather than converting", async () => {
+    show(withEntry(imported("e1", "expense", "APLICACAO CDB", "FIT-1")));
+    const user = await openForm("APLICACAO CDB");
+
+    await user.click(screen.getByRole("button", { name: "Marcar como transferência" }));
+
+    expect(screen.getByText("Escolha a conta de destino.")).toBeInTheDocument();
+    expect(useVault.getState().vault.transactions[0]).toMatchObject({ kind: "expense" });
+  });
+
+  it("takes the money out of the Expense total", async () => {
+    // formatBRL goes through Intl, which separates "R$" from the number with a
+    // non-breaking space; the assertion is about the total, not that byte.
+    const summary = () =>
+      (screen.getByTestId("selection-summary").textContent ?? "").replace(
+        / /g,
+        " ",
+      );
+
+    show(withEntry(imported("e1", "expense", "APLICACAO CDB", "FIT-1")));
+    expect(summary()).toContain("Despesas R$ 300,00");
+
+    const user = await openForm("APLICACAO CDB");
+    await user.selectOptions(screen.getByLabelText("Conta de destino"), SAVINGS);
+    await user.click(screen.getByRole("button", { name: "Marcar como transferência" }));
+
+    expect(summary()).toContain("Despesas R$ 0,00");
+  });
+
+  it("closes the form on cancel without converting", async () => {
+    show(withEntry(imported("e1", "expense", "APLICACAO CDB", "FIT-1")));
+    const user = await openForm("APLICACAO CDB");
+
+    await user.click(screen.getByRole("button", { name: "Cancelar" }));
+
+    expect(screen.queryByLabelText("Conta de destino")).not.toBeInTheDocument();
+    expect(useVault.getState().vault.transactions[0]).toMatchObject({ kind: "expense" });
+  });
+
+  it("warns when the Vault has no other Account to point at", async () => {
+    useVault.setState({
+      vault: {
+        ...base,
+        accounts: [base.accounts[0]],
+        transactions: [imported("e1", "expense", "APLICACAO CDB", "FIT-1")],
+      },
+      status: "ready",
+    });
+    render(<TransactionsPanel />);
+    await openForm("APLICACAO CDB");
+
+    expect(screen.getByText(/Só existe uma conta no cofre/)).toBeInTheDocument();
+  });
+
+  it("offers to undo a Transfer recovered from one entry, and restores it", async () => {
+    show(withEntry(imported("e1", "expense", "APLICACAO CDB", "FIT-1")));
+    const user = await openForm("APLICACAO CDB");
+    await user.selectOptions(screen.getByLabelText("Conta de destino"), SAVINGS);
+    await user.click(screen.getByRole("button", { name: "Marcar como transferência" }));
+
+    await user.click(
+      screen.getByRole("button", { name: "Desfazer transferência APLICACAO CDB" }),
+    );
+
+    expect(useVault.getState().vault.transactions[0]).toEqual({
+      id: "e1",
+      kind: "expense",
+      date: "2026-10-02",
+      amount: 30000,
+      description: "APLICACAO CDB",
+      accountId: INTER,
+      categoryId: null,
+      fitid: "FIT-1",
+    });
+  });
+
+  it("does not offer the undo on a hand-entered Transfer", () => {
+    show({
+      ...base,
+      transactions: [
+        {
+          id: "t1",
+          kind: "transfer",
+          date: "2026-10-02",
+          amount: centavos(30000),
+          description: "DIGITADA",
+          fromAccountId: INTER,
+          toAccountId: SAVINGS,
+        },
+      ],
+    });
+
+    expect(
+      screen.queryByRole("button", { name: /Desfazer transferência/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("converts a hand-entered entry but then offers no undo", async () => {
+    show(withEntry(imported("e1", "expense", "PAGAMENTO MANUAL")));
+    const user = await openForm("PAGAMENTO MANUAL");
+
+    await user.selectOptions(screen.getByLabelText("Conta de destino"), SAVINGS);
+    await user.click(screen.getByRole("button", { name: "Marcar como transferência" }));
+
+    expect(useVault.getState().vault.transactions[0]).toMatchObject({ kind: "transfer" });
+    expect(
+      screen.queryByRole("button", { name: /Desfazer transferência/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("stops offering the checkbox once the entry is a Transfer", async () => {
+    show(withEntry(imported("e1", "expense", "APLICACAO CDB", "FIT-1")));
+    expect(
+      screen.getByRole("checkbox", { name: "Selecionar APLICACAO CDB" }),
+    ).toBeInTheDocument();
+
+    const user = await openForm("APLICACAO CDB");
+    await user.selectOptions(screen.getByLabelText("Conta de destino"), SAVINGS);
+    await user.click(screen.getByRole("button", { name: "Marcar como transferência" }));
+
+    expect(
+      screen.queryByRole("checkbox", { name: "Selecionar APLICACAO CDB" }),
+    ).not.toBeInTheDocument();
+  });
+});

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { deriveAccountBalance } from "../domain/balances";
 import { centavos } from "../domain/money";
+import { planImport } from "../domain/statementImport";
 import type { Transaction, Vault } from "../domain/types";
 
 /**
@@ -836,5 +837,203 @@ describe("balances after an edit or a delete", () => {
     useVault.getState().deleteTransaction("e1");
     expect(balance(useVault)).toBe(100000);
     await vi.waitFor(() => expect(state.saves).toHaveLength(1));
+  });
+});
+
+describe("marking an entry as a Transfer, and reverting it", () => {
+  const CHECKING = "acc-checking";
+  const POCKET = "acc-pocket";
+
+  /**
+   * One imported Expense of R$ 300,00 on a checking Account that opened with
+   * R$ 1.000,00, plus a second Account holding nothing — the shape of the real
+   * Vault once the user adds the investment pocket the money was going to.
+   */
+  async function storeWithImportedExpense(kind: "expense" | "income" = "expense") {
+    const useVault = await freshStore();
+    state.loadResult = vaultWith({
+      accounts: [
+        { id: CHECKING, name: "Banco Inter", type: "checking", openingBalance: centavos(100000) },
+        { id: POCKET, name: "Inter CDB", type: "savings", openingBalance: centavos(0) },
+      ],
+      transactions: [
+        {
+          id: "e1",
+          kind,
+          date: "2026-10-02",
+          amount: centavos(30000),
+          description: "APLICACAO CDB",
+          accountId: CHECKING,
+          categoryId: null,
+          fitid: "FIT-1",
+        } satisfies Transaction,
+      ],
+    });
+    await useVault.getState().init();
+    await vi.waitFor(() => expect(state.inFlight).toBe(0));
+    state.saves = [];
+    return useVault;
+  }
+
+  const balanceOf = (
+    useVault: Awaited<ReturnType<typeof freshStore>>,
+    accountId: string,
+  ) => {
+    const vault = useVault.getState().vault;
+    const account = vault.accounts.find((a) => a.id === accountId);
+    if (account === undefined) throw new Error(`no account ${accountId}`);
+    return deriveAccountBalance(account, vault.transactions);
+  };
+
+  it("replaces the entry with one Transfer in a single save", async () => {
+    const useVault = await storeWithImportedExpense();
+
+    const result = useVault.getState().markTransactionAsTransfer("e1", POCKET);
+
+    expect(result).toEqual({ ok: true });
+    const transactions = useVault.getState().vault.transactions;
+    expect(transactions).toHaveLength(1);
+    expect(transactions[0]).toMatchObject({
+      id: "e1",
+      kind: "transfer",
+      fromAccountId: CHECKING,
+      toAccountId: POCKET,
+    });
+    await vi.waitFor(() => expect(state.saves).toHaveLength(1));
+  });
+
+  it("leaves the entry's own Account on exactly the balance it had", async () => {
+    const useVault = await storeWithImportedExpense();
+    expect(balanceOf(useVault, CHECKING)).toBe(70000); // 1000,00 - 300,00
+
+    useVault.getState().markTransactionAsTransfer("e1", POCKET);
+
+    expect(balanceOf(useVault, CHECKING)).toBe(70000);
+    await vi.waitFor(() => expect(state.saves).toHaveLength(1));
+  });
+
+  it("moves the chosen Account's balance by the amount, which pairing never does", async () => {
+    const useVault = await storeWithImportedExpense();
+    expect(balanceOf(useVault, POCKET)).toBe(0);
+
+    useVault.getState().markTransactionAsTransfer("e1", POCKET);
+
+    // The money was always going here; the Vault just wasn't tracking it.
+    expect(balanceOf(useVault, POCKET)).toBe(30000);
+    await vi.waitFor(() => expect(state.saves).toHaveLength(1));
+  });
+
+  it("takes money out of the chosen Account when the entry was an Income", async () => {
+    const useVault = await storeWithImportedExpense("income");
+
+    useVault.getState().markTransactionAsTransfer("e1", POCKET);
+
+    expect(balanceOf(useVault, POCKET)).toBe(-30000);
+    expect(balanceOf(useVault, CHECKING)).toBe(130000); // 1000,00 + 300,00
+    await vi.waitFor(() => expect(state.saves).toHaveLength(1));
+  });
+
+  it("writes the recovered entry to disk, so it survives a restart", async () => {
+    const useVault = await storeWithImportedExpense();
+
+    useVault.getState().markTransactionAsTransfer("e1", POCKET);
+    await vi.waitFor(() => expect(state.saves).toHaveLength(1));
+
+    const onDisk = diskOf(DEFAULT_DIR).transactions as Transaction[];
+    expect(onDisk[0]).toMatchObject({
+      kind: "transfer",
+      recoveredFrom: [{ fitid: "FIT-1", accountId: CHECKING }],
+    });
+    expect(onDisk[0]).not.toHaveProperty("categoryId");
+  });
+
+  it("refuses the entry's own Account and writes nothing", async () => {
+    const useVault = await storeWithImportedExpense();
+
+    const result = useVault.getState().markTransactionAsTransfer("e1", CHECKING);
+
+    expect(result.ok).toBe(false);
+    expect(useVault.getState().vault.transactions[0]).toMatchObject({ kind: "expense" });
+    expect(state.saves).toHaveLength(0);
+  });
+
+  it("restores the imported entry with its fitid, in one save", async () => {
+    const useVault = await storeWithImportedExpense();
+    useVault.getState().markTransactionAsTransfer("e1", POCKET);
+    await vi.waitFor(() => expect(state.saves).toHaveLength(1));
+    state.saves = [];
+
+    const result = useVault.getState().revertTransferToEntry("e1");
+
+    expect(result).toEqual({ ok: true });
+    expect(useVault.getState().vault.transactions[0]).toEqual({
+      id: "e1",
+      kind: "expense",
+      date: "2026-10-02",
+      amount: 30000,
+      description: "APLICACAO CDB",
+      accountId: CHECKING,
+      categoryId: null,
+      fitid: "FIT-1",
+    });
+    // Both balances are back where they started.
+    expect(balanceOf(useVault, CHECKING)).toBe(70000);
+    expect(balanceOf(useVault, POCKET)).toBe(0);
+    await vi.waitFor(() => expect(state.saves).toHaveLength(1));
+  });
+
+  it("refuses to revert a hand-entered Transfer and writes nothing", async () => {
+    const useVault = await freshStore();
+    state.loadResult = vaultWith({
+      accounts: [
+        { id: CHECKING, name: "Banco Inter", type: "checking", openingBalance: centavos(0) },
+        { id: POCKET, name: "Inter CDB", type: "savings", openingBalance: centavos(0) },
+      ],
+      transactions: [
+        {
+          id: "t1",
+          kind: "transfer",
+          date: "2026-10-02",
+          amount: centavos(30000),
+          description: "movido à mão",
+          fromAccountId: CHECKING,
+          toAccountId: POCKET,
+        } satisfies Transaction,
+      ],
+    });
+    await useVault.getState().init();
+    await vi.waitFor(() => expect(state.inFlight).toBe(0));
+    state.saves = [];
+
+    const result = useVault.getState().revertTransferToEntry("t1");
+
+    expect(result.ok).toBe(false);
+    expect(useVault.getState().vault.transactions[0]).toMatchObject({ kind: "transfer" });
+    expect(state.saves).toHaveLength(0);
+  });
+
+  it("re-importing the Statement the entry came from adds nothing", async () => {
+    const useVault = await storeWithImportedExpense();
+    useVault.getState().markTransactionAsTransfer("e1", POCKET);
+    await vi.waitFor(() => expect(state.saves).toHaveLength(1));
+
+    // The bank still sends the entry; the recovered id is what stops the
+    // re-import from undoing the conversion.
+    const plan = planImport(
+      [
+        {
+          fitid: "FIT-1",
+          date: "2026-10-02",
+          amount: -30000,
+          description: "APLICACAO CDB",
+          trntype: "DEBIT",
+        },
+      ],
+      CHECKING,
+      useVault.getState().vault.transactions,
+    );
+
+    expect(plan.additions).toHaveLength(0);
+    expect(plan.duplicates).toHaveLength(1);
   });
 });

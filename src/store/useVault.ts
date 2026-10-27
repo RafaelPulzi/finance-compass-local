@@ -4,6 +4,7 @@ import type { Centavos } from "../domain/money";
 import { seedVault } from "../domain/seed";
 import { type ImportPlan, toTransactions } from "../domain/statementImport";
 import { type TransactionEdit, editedTransaction } from "../domain/transactionEdit";
+import { entryFromTransfer, transferFromEntry } from "../domain/transferRecovery";
 import type {
   Account,
   AccountType,
@@ -108,6 +109,25 @@ interface VaultState {
    * with the Transaction, so re-importing the same Statement will add it back.
    */
   deleteTransaction: (transactionId: Id) => void;
+  /**
+   * Mark one imported entry as a Transfer between its own Account and
+   * `otherAccountId`, replacing the entry rather than adding beside it.
+   *
+   * This is the only action here that moves a balance: the entry affected one
+   * Account, and as a Transfer it affects two, so the chosen Account gains or
+   * loses the amount. That is correct — money arriving in an Account that
+   * wasn't tracking it has to show up — and the UI says so before asking.
+   */
+  markTransactionAsTransfer: (
+    transactionId: Id,
+    otherAccountId: Id,
+  ) => TransactionEditResult;
+  /**
+   * Undo a marking, restoring the imported entry the Transfer was recovered
+   * from — including its `fitid`, without which the next Import of that
+   * Statement would add the entry all over again.
+   */
+  revertTransferToEntry: (transferId: Id) => TransactionEditResult;
 }
 
 let repository: VaultRepository | null = null;
@@ -377,6 +397,37 @@ export const useVault = create<VaultState>((set, get) => {
         ...vault,
         transactions: vault.transactions.filter((tx) => tx.id !== transactionId),
       });
+    },
+
+    markTransactionAsTransfer(transactionId, otherAccountId) {
+      const vault = get().vault;
+      const outcome = transferFromEntry(vault, transactionId, otherAccountId);
+      if (!outcome.ok) return { ok: false, message: outcome.message };
+
+      // One mutation, so one save: the entry is replaced in place rather than
+      // removed and re-added, which would be two writes and a vault that is
+      // briefly missing the money.
+      mutate({
+        ...vault,
+        transactions: vault.transactions.map((tx) =>
+          tx.id === transactionId ? outcome.transaction : tx,
+        ),
+      });
+      return { ok: true };
+    },
+
+    revertTransferToEntry(transferId) {
+      const vault = get().vault;
+      const outcome = entryFromTransfer(vault, transferId);
+      if (!outcome.ok) return { ok: false, message: outcome.message };
+
+      mutate({
+        ...vault,
+        transactions: vault.transactions.map((tx) =>
+          tx.id === transferId ? outcome.transaction : tx,
+        ),
+      });
+      return { ok: true };
     },
   };
 });

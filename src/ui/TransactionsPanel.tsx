@@ -11,6 +11,7 @@ import { useVault } from "../store/useVault";
 import { BulkClassifyBar } from "./BulkClassifyBar";
 import { TransactionEditForm } from "./TransactionEditForm";
 import { TransactionFilters } from "./TransactionFilters";
+import { TransferMarkForm } from "./TransferMarkForm";
 import { todayISO } from "./labels";
 
 type Kind = Transaction["kind"];
@@ -31,6 +32,8 @@ export function TransactionsPanel() {
   const setTransactionCategoryMany = useVault((s) => s.setTransactionCategoryMany);
   const editTransaction = useVault((s) => s.editTransaction);
   const deleteTransaction = useVault((s) => s.deleteTransaction);
+  const markTransactionAsTransfer = useVault((s) => s.markTransactionAsTransfer);
+  const revertTransferToEntry = useVault((s) => s.revertTransferToEntry);
 
   const [kind, setKind] = useState<Kind>("expense");
   const [date, setDate] = useState(todayISO());
@@ -47,6 +50,10 @@ export function TransactionsPanel() {
   /** At most one row is being edited, and at most one is awaiting a delete confirmation. */
   const [editingId, setEditingId] = useState<Id | null>(null);
   const [deletingId, setDeletingId] = useState<Id | null>(null);
+  /** At most one row is naming the other side of a Transfer. */
+  const [markingId, setMarkingId] = useState<Id | null>(null);
+  /** A refusal that has no form of its own to show it, shown on its row. */
+  const [rowError, setRowError] = useState<{ id: Id; message: string } | null>(null);
 
   /**
    * A new filter is a new result set, so the page the user was on no longer
@@ -62,17 +69,28 @@ export function TransactionsPanel() {
     // user can no longer see is a change they can't finish or abandon.
     setEditingId(null);
     setDeletingId(null);
+    setMarkingId(null);
+    setRowError(null);
   }
 
   /** Open one row's form, closing anything else that was open. */
   function startEditing(id: Id) {
     setEditingId(id);
     setDeletingId(null);
+    setMarkingId(null);
   }
 
   function startDeleting(id: Id) {
     setDeletingId(id);
     setEditingId(null);
+    setMarkingId(null);
+  }
+
+  function startMarking(id: Id) {
+    setMarkingId(id);
+    setEditingId(null);
+    setDeletingId(null);
+    setRowError(null);
   }
 
   function toggleSelected(id: Id) {
@@ -297,7 +315,7 @@ export function TransactionsPanel() {
           </li>
         )}
         {rows.map((tx) => (
-          <li key={tx.id} className="flex items-center gap-2 py-2">
+          <li key={tx.id} className="flex flex-wrap items-center gap-2 py-2">
             {editingId === tx.id ? (
               <TransactionEditForm
                 transaction={tx}
@@ -310,6 +328,18 @@ export function TransactionsPanel() {
                   return result;
                 }}
                 onCancel={() => setEditingId(null)}
+              />
+            ) : markingId === tx.id && tx.kind !== "transfer" ? (
+              <TransferMarkForm
+                transaction={tx}
+                accounts={vault.accounts}
+                onMark={(otherAccountId) => {
+                  const result = markTransactionAsTransfer(tx.id, otherAccountId);
+                  // A refused marking keeps the form open with its message showing.
+                  if (result.ok) setMarkingId(null);
+                  return result;
+                }}
+                onCancel={() => setMarkingId(null)}
               />
             ) : deletingId === tx.id ? (
               <div className="flex w-full flex-wrap items-center gap-2 py-1">
@@ -401,6 +431,35 @@ export function TransactionsPanel() {
               {formatBRL(tx.amount)}
             </span>
             <span className="flex shrink-0 gap-2 text-xs text-slate-400">
+              {tx.kind === "transfer" ? (
+                // Only a Transfer recovered from a single imported entry knows
+                // what to go back to; one the user typed has no earlier entry,
+                // and one recovered from both sides belongs to the pair list.
+                tx.recoveredFrom?.length === 1 && (
+                  <button
+                    type="button"
+                    aria-label={`Desfazer transferência ${tx.description || "sem descrição"}`}
+                    className="underline hover:text-slate-700 dark:hover:text-slate-200"
+                    onClick={() => {
+                      const result = revertTransferToEntry(tx.id);
+                      setRowError(
+                        result.ok ? null : { id: tx.id, message: result.message },
+                      );
+                    }}
+                  >
+                    desfazer transferência
+                  </button>
+                )
+              ) : (
+                <button
+                  type="button"
+                  aria-label={`Marcar ${tx.description || "transação sem descrição"} como transferência`}
+                  className="underline hover:text-slate-700 dark:hover:text-slate-200"
+                  onClick={() => startMarking(tx.id)}
+                >
+                  transferência
+                </button>
+              )}
               <button
                 type="button"
                 aria-label={`Editar ${tx.description || "transação sem descrição"}`}
@@ -418,6 +477,9 @@ export function TransactionsPanel() {
                 excluir
               </button>
             </span>
+            {rowError?.id === tx.id && (
+              <p className="w-full text-xs text-red-600">{rowError.message}</p>
+            )}
               </>
             )}
           </li>

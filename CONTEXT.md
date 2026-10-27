@@ -50,3 +50,18 @@ _Avoid_: Feed, sync, export
 **Import**:
 The act, and the record, of turning one Statement into Transactions within a single Account. An Import skips entries that are already present so re-importing an overlapping Statement creates no duplicates.
 _Avoid_: Sync, upload, ingest
+
+## Recovering Transfers
+
+A Statement describes one Account, so it can never say that money leaving it arrived in another Account the user also owns. An Import therefore produces only Income and Expense, and the Transfers hidden among them are recovered afterwards (ADR-0006).
+
+**Candidate pair**:
+Two imported entries the app believes are the two sides of one Transfer — an Expense on one Account and an Income on another, for the same amount, a few days apart. It is a suggestion, not a change: a candidate pair is offered to the user, who accepts or dismisses it, and nothing is ever converted on its own.
+_Avoid_: Match, suggestion, detected transfer
+
+**Dismissed**:
+The state of a candidate pair the user has said no to. A dismissed pair is never offered again, so working through the list makes progress. Dismissing changes no Transaction.
+
+**Recovered from**:
+The imported entries a Transfer was built out of, each remembered as the bank's own id and the Account it was imported on. A Transfer recovered from a candidate pair has two; one marked from a single entry has one; a Transfer the user typed in has none, because it came from no Statement. This is what stops a later Import from re-adding entries that have already been converted.
+_Avoid_: Sources (a Transfer's *source* is its origin Account), origins

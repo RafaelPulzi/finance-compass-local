@@ -65,3 +65,11 @@ The state of a candidate pair the user has said no to. A dismissed pair is never
 **Recovered from**:
 The imported entries a Transfer was built out of, each remembered as the bank's own id and the Account it was imported on. A Transfer recovered from a candidate pair has two; one marked from a single entry has one; a Transfer the user typed in has none, because it came from no Statement. This is what stops a later Import from re-adding entries that have already been converted.
 _Avoid_: Sources (a Transfer's *source* is its origin Account), origins
+
+**Marking**:
+Naming, by hand, the Account on the other side of a single imported entry, which turns that entry into a Transfer. Needed when only one leg was ever imported — money moving to somewhere no Statement covers — so no candidate pair can exist. The entry is *replaced*, not kept alongside the Transfer, and its direction comes from its own sign rather than from the user. Marking is the one conversion that moves a balance: the chosen Account was not tracking that money before.
+_Avoid_: Linking, assigning, converting to transfer
+
+**Undoing a marking**:
+Turning a Transfer back into the single imported entry it was recovered from, with that entry's bank id restored so a later Import still skips it. The entry comes back Uncategorized, since a Transfer had nowhere to keep a Category. A Transfer the user typed in has nothing to undo.
+_Avoid_: Unmarking, reverting, rollback

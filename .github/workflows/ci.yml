@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  # The four gates the project already defines as npm scripts. They are run
+  # separately rather than chained so a red run names which one failed.
+  #
+  # `test` and `typecheck` are both here on purpose: Vitest transpiles without
+  # checking types, so a type error can sit behind a fully green test run.
+  gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      - name: Tests
+        run: npm run test
+
+      - name: Types
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      # Covers the Vite production build; the Tauri bundle is not built here,
+      # since the shell is a thin wrapper and needs the native toolchain.
+      - name: Build
+        run: npm run build

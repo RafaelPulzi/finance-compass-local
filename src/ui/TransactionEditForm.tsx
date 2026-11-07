@@ -1,8 +1,10 @@
 import { type FormEvent, useState } from "react";
+import { treeHas } from "../domain/categories";
 import { parseBRL } from "../domain/money";
 import type { TransactionEdit } from "../domain/transactionEdit";
-import type { Account, Category, Transaction } from "../domain/types";
+import type { Account, Transaction } from "../domain/types";
 import type { TransactionEditResult } from "../store/useVault";
+import { CategoryOptions, type CategoryTree } from "./CategoryOptions";
 
 type EditableKind = "income" | "expense";
 
@@ -14,7 +16,7 @@ function amountField(amount: number): string {
 interface Props {
   transaction: Transaction;
   accounts: readonly Account[];
-  categoriesByKind: Record<EditableKind, Category[]>;
+  treesByKind: Record<EditableKind, CategoryTree>;
   /** Returns the store's verdict: a refused edit is reported, not swallowed. */
   onSave: (changes: TransactionEdit) => TransactionEditResult;
   onCancel: () => void;
@@ -30,7 +32,7 @@ interface Props {
 export function TransactionEditForm({
   transaction,
   accounts,
-  categoriesByKind,
+  treesByKind,
   onSave,
   onCancel,
 }: Props) {
@@ -62,7 +64,7 @@ export function TransactionEditForm({
    */
   function changeKind(next: EditableKind) {
     setKind(next);
-    if (!categoriesByKind[next].some((c) => c.id === categoryId)) setCategoryId("");
+    if (!treeHas(treesByKind[next], categoryId)) setCategoryId("");
   }
 
   function submit(e: FormEvent) {
@@ -178,11 +180,7 @@ export function TransactionEditForm({
           onChange={(e) => setCategoryId(e.target.value)}
         >
           <option value="">Sem categoria</option>
-          {categoriesByKind[kind].map((c) => (
-            <option key={c.id} value={c.id}>
-              {c.name}
-            </option>
-          ))}
+          <CategoryOptions tree={treesByKind[kind]} />
         </select>
       )}
 

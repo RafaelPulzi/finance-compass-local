@@ -3,6 +3,7 @@ import { centavos } from "./money";
 import {
   budgetState,
   budgetStatusForMonth,
+  monthChoices,
   monthlyTotals,
   recentMonths,
   spendingByCategoryForMonth,
@@ -178,5 +179,39 @@ describe("monthlyTotals", () => {
       // October expenses: 300+250+260+1850+45 (incl. uncategorized) = 2705,00
       { month: "2026-10", income: 485000, expense: 270500, net: 214500 },
     ]);
+  });
+});
+
+describe("monthChoices", () => {
+  const tx = (id: string, date: string) => ({
+    id,
+    kind: "expense" as const,
+    date,
+    amount: centavos(100),
+    description: id,
+    accountId: "a",
+    categoryId: null,
+  });
+
+  it("offers the last twelve months even with no data, newest first", () => {
+    const months = monthChoices(emptyVault(), "2026-11");
+    expect(months).toHaveLength(12);
+    expect(months[0]).toBe("2026-11");
+    expect(months[11]).toBe("2025-12");
+  });
+
+  it("reaches every month the Vault has Transactions in, however old", () => {
+    // Two years of imported history: the dashboard used to stop at twelve months.
+    const vault = { ...emptyVault(), transactions: [tx("old", "2024-10-16"), tx("mid", "2025-06-01")] };
+    const months = monthChoices(vault, "2026-11");
+    expect(months).toContain("2024-10");
+    expect(months).toContain("2025-06");
+    expect(months.at(-1)).toBe("2024-10");
+    expect(new Set(months).size).toBe(months.length);
+  });
+
+  it("keeps a post-dated month too", () => {
+    const months = monthChoices({ ...emptyVault(), transactions: [tx("f", "2027-03-10")] }, "2026-11");
+    expect(months[0]).toBe("2027-03");
   });
 });

@@ -1,3 +1,4 @@
+import { localTodayISO } from "../domain/dates";
 import type { AccountType } from "../domain/types";
 
 export const ACCOUNT_TYPE_LABELS: Record<AccountType, string> = {
@@ -14,6 +15,10 @@ export const ACCOUNT_TYPES: AccountType[] = [
   "credit-card",
 ];
 
+/**
+ * Today on the user's own calendar. Not `toISOString()`, which is UTC: from
+ * 21:00 in Brazil it already says tomorrow (see domain/dates).
+ */
 export function todayISO(): string {
-  return new Date().toISOString().slice(0, 10);
+  return localTodayISO();
 }

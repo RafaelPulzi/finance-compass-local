@@ -36,3 +36,32 @@ jobs:
       # since the shell is a thin wrapper and needs the native toolchain.
       - name: Build
         run: npm run build
+
+  # The desktop shell: the Rust code and the capability files. tauri-build
+  # validates every permission identifier at compile time, so a broken
+  # capabilities/default.json fails here rather than as "every save fails" in
+  # the desktop window (see ADR-0007, which depends on fs:allow-rename).
+  # Windows, because that is the platform the app is used on.
+  shell:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      # The shell's config points at ../dist, so the frontend is built first.
+      - run: npm run build
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Shell
+        run: cargo check --manifest-path src-tauri/Cargo.toml --locked

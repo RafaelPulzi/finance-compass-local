@@ -22,6 +22,21 @@ export function recentMonths(upTo: MonthKey, count: number): MonthKey[] {
   return months;
 }
 
+/**
+ * The months a month picker should offer, newest first: the last twelve up to
+ * `current`, plus every month the Vault actually has Transactions in.
+ *
+ * The twelve alone made older history unreachable on the dashboard — a Vault
+ * holding two years of imported Statements could only show its last year,
+ * which is the same bug the Transactions page had before it listed every
+ * month (#11). Months with data in the future (a post-dated entry) are kept too.
+ */
+export function monthChoices(vault: Vault, current: MonthKey): MonthKey[] {
+  const months = new Set(recentMonths(current, 12));
+  for (const tx of vault.transactions) months.add(monthKey(tx.date));
+  return [...months].sort().reverse();
+}
+
 export interface CategorySpend {
   categoryId: Id;
   categoryName: string;

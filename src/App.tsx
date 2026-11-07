@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   HashRouter,
   Link,
@@ -9,10 +9,11 @@ import {
 } from "react-router-dom";
 import { deriveNetWorth } from "./domain/balances";
 import { formatBRL } from "./domain/money";
-import { type MonthKey, recentMonths } from "./domain/reporting";
+import { type MonthKey, monthChoices } from "./domain/reporting";
 import { useVault } from "./store/useVault";
 import { AccountsPanel } from "./ui/AccountsPanel";
 import { BudgetsPanel } from "./ui/BudgetsPanel";
+import { CategoriesPanel } from "./ui/CategoriesPanel";
 import { DashboardPage } from "./ui/DashboardPage";
 import { ImportPanel } from "./ui/ImportPanel";
 import { TransactionsPanel } from "./ui/TransactionsPanel";
@@ -24,6 +25,7 @@ const NAV = [
   { to: "/", label: "Painel" },
   { to: "/transacoes", label: "Transações" },
   { to: "/contas", label: "Contas" },
+  { to: "/categorias", label: "Categorias" },
   { to: "/orcamentos", label: "Orçamentos" },
   { to: "/cofre", label: "Cofre" },
 ];
@@ -45,9 +47,15 @@ function Shell() {
   const repoLabel = useVault((s) => s.repoLabel);
   const vault = useVault((s) => s.vault);
   const init = useVault((s) => s.init);
+  const saveError = useVault((s) => s.saveError);
+  const retrySave = useVault((s) => s.retrySave);
   const location = useLocation();
 
   const [month, setMonth] = useState<MonthKey>(() => todayISO().slice(0, 7));
+  const monthOptions = useMemo(
+    () => monthChoices(vault, todayISO().slice(0, 7)),
+    [vault],
+  );
 
   useEffect(() => {
     void init();
@@ -71,7 +79,6 @@ function Shell() {
   }
 
   const netWorth = deriveNetWorth(vault);
-  const monthOptions = [...recentMonths(todayISO().slice(0, 7), 12)].reverse();
   const showMonthFilter = MONTH_SCOPED.has(location.pathname);
 
   return (
@@ -120,6 +127,26 @@ function Shell() {
       </header>
 
       <main className="mx-auto max-w-5xl px-6 py-6">
+        {/* Shown until a later save succeeds: what is on screen is not on disk. */}
+        {saveError !== null && (
+          <div
+            role="alert"
+            className="mb-5 flex flex-wrap items-center gap-3 rounded-xl border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-200"
+          >
+            <div className="min-w-0 flex-1">
+              <strong>As últimas alterações não foram salvas no disco.</strong>
+              <p className="mt-0.5 break-words text-xs">{saveError}</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => void retrySave()}
+              className="rounded-md bg-red-600 px-3 py-1 text-xs font-medium text-white hover:bg-red-700"
+            >
+              Tentar salvar de novo
+            </button>
+          </div>
+        )}
+
         {/* One filter row above everything it scopes — never a filter per chart. */}
         {showMonthFilter && (
           <div className="mb-5 flex items-center gap-2">
@@ -153,6 +180,7 @@ function Shell() {
               </div>
             }
           />
+          <Route path="/categorias" element={<CategoriesPanel />} />
           <Route path="/orcamentos" element={<BudgetsPanel month={month} />} />
           <Route
             path="/cofre"

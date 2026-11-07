@@ -10,15 +10,24 @@ const KEY = "finance-compass:vault";
  */
 export function createLocalStorageRepository(): VaultRepository {
   return {
-    label: "Browser (localStorage, dev only)",
+    label: "Navegador (localStorage, só para desenvolvimento)",
     // Not folder-backed: there is nothing to point a folder picker at.
     dir: null,
     async load() {
       const raw = localStorage.getItem(KEY);
       if (raw === null) return null;
-      return parseVault(JSON.parse(raw));
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        throw new Error(
+          "Os dados salvos no navegador estão corrompidos e não puderam ser lidos.",
+        );
+      }
+      return parseVault(parsed);
     },
     async save(vault: Vault) {
+      // Throws when the browser's quota is full; the store reports it to the user.
       localStorage.setItem(KEY, JSON.stringify(vault));
     },
   };

@@ -52,14 +52,28 @@ export function parseVault(raw: unknown): Vault {
   }
   return {
     schemaVersion: VAULT_SCHEMA_VERSION,
-    accounts: stored.accounts ?? [],
-    groups: stored.groups ?? [],
-    categories: stored.categories ?? [],
-    transactions: stored.transactions ?? [],
-    budgets: stored.budgets ?? [],
-    imports: stored.imports ?? [],
-    dismissedTransferPairs: stored.dismissedTransferPairs ?? [],
+    accounts: listOf(stored.accounts, "accounts"),
+    groups: listOf(stored.groups, "groups"),
+    categories: listOf(stored.categories, "categories"),
+    transactions: listOf(stored.transactions, "transactions"),
+    budgets: listOf(stored.budgets, "budgets"),
+    imports: listOf(stored.imports, "imports"),
+    dismissedTransferPairs: listOf(stored.dismissedTransferPairs, "dismissedTransferPairs"),
   };
+}
+
+/**
+ * An entity list, or an empty one when the field is absent (an older schema).
+ * Anything else is refused at the door: the vault is plain files a person may
+ * edit by hand, and `{}` where a list belongs would otherwise load fine and
+ * crash the first screen that iterates it.
+ */
+function listOf<T>(value: T[] | undefined, field: string): T[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) {
+    throw new Error(`O cofre está inválido: "${field}" deveria ser uma lista.`);
+  }
+  return value;
 }
 
 /** True when running inside the Tauri desktop shell (vs. a plain browser dev server). */

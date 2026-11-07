@@ -1,5 +1,5 @@
 import { join } from "@tauri-apps/api/path";
-import { exists, mkdir, readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
+import { exists, mkdir, readTextFile, rename, writeTextFile } from "@tauri-apps/plugin-fs";
 import type {
   Account,
   Budget,
@@ -22,6 +22,12 @@ import { VAULT_MARKER } from "./vaultLocation";
  * Note that a save writes several files in sequence. Two overlapping saves would
  * interleave and tear the vault, so callers must serialize them — `useVault`
  * does, through its save chain.
+ *
+ * Each file is replaced atomically: the new contents go to a `.tmp` sibling,
+ * which is then renamed over the real file. Writing in place truncates the file
+ * first, so a crash or power cut mid-write would leave `transactions.json` cut
+ * in half — unparseable, and with it the whole vault. With the rename, a file is
+ * always either its old version or its new one.
  */
 
 const NAMES = {
@@ -67,11 +73,24 @@ export function createTauriRepository(
 
   async function readJson<T>(path: string, fallback: T): Promise<T> {
     if (!(await exists(path))) return fallback;
-    return JSON.parse(await readTextFile(path)) as T;
+    const text = await readTextFile(path);
+    try {
+      return JSON.parse(text) as T;
+    } catch {
+      // A bare SyntaxError ("Unexpected token } in JSON at position 48113")
+      // tells the user nothing about which of eight files to look at.
+      const name = path.split(/[\\/]/).pop() ?? path;
+      throw new Error(
+        `O arquivo ${name} do cofre está corrompido e não pôde ser lido. ` +
+          "Restaure-o de um backup ou corrija o JSON; nenhum arquivo foi alterado.",
+      );
+    }
   }
 
   async function writeJson(path: string, value: unknown): Promise<void> {
-    await writeTextFile(path, `${JSON.stringify(value, null, 2)}\n`);
+    const temp = `${path}.tmp`;
+    await writeTextFile(temp, `${JSON.stringify(value, null, 2)}\n`);
+    await rename(temp, path);
   }
 
   return {
@@ -115,7 +134,6 @@ export function createTauriRepository(
     async save(vault: Vault) {
       const p = await filePaths();
       await mkdir(dir, { recursive: true });
-      await writeJson(p.meta, { schemaVersion: vault.schemaVersion });
       await writeJson(p.accounts, vault.accounts);
       await writeJson(p.groups, vault.groups);
       await writeJson(p.categories, vault.categories);
@@ -123,6 +141,10 @@ export function createTauriRepository(
       await writeJson(p.budgets, vault.budgets);
       await writeJson(p.imports, vault.imports);
       await writeJson(p.dismissedTransferPairs, vault.dismissedTransferPairs);
+      // The marker goes last. It is what makes a folder count as a vault, so a
+      // first save interrupted halfway leaves a folder that is not yet one,
+      // rather than a "vault" missing half its files.
+      await writeJson(p.meta, { schemaVersion: vault.schemaVersion });
     },
   };
 }

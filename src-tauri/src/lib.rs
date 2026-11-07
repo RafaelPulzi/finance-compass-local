@@ -6,8 +6,16 @@ use tauri_plugin_fs::FsExt;
 /// chosen through the dialog isn't known at compile time, so it has to be added
 /// to the filesystem scope at runtime — and again on every launch, because that
 /// scope lives in memory and isn't persisted.
+///
+/// Only absolute paths are accepted. Every path the app sends comes from the
+/// folder dialog or from `settings.json`, both absolute, so a relative one can
+/// only be a mistake — and it would resolve against whatever the process's
+/// working directory happens to be.
 #[tauri::command]
 fn allow_vault_dir(app: tauri::AppHandle, path: String) -> Result<(), String> {
+  if path.trim().is_empty() || !std::path::Path::new(&path).is_absolute() {
+    return Err(format!("Caminho de cofre inválido: {path}"));
+  }
   app
     .fs_scope()
     .allow_directory(&path, true)

@@ -40,6 +40,8 @@ const state = {
   /** Suspend a folder switch just before it swaps repositories. */
   stallRemember: false,
   releaseRemember: null as (() => void) | null,
+  /** When set, every save fails with this message (a full disk, a vanished drive). */
+  failSaves: null as string | null,
 };
 
 function folder(dir: string): FakeFolder {
@@ -102,6 +104,10 @@ function makeRepo(dir: string) {
     },
     save: async (vault: Vault): Promise<void> => {
       const f = folder(dir);
+      if (state.failSaves !== null) {
+        await yieldToOtherTasks();
+        throw new Error(state.failSaves);
+      }
       state.inFlight += 1;
       state.saveCount += 1;
       const isFirst = state.saveCount === 1;
@@ -172,6 +178,7 @@ beforeEach(() => {
   state.remembered = undefined;
   state.stallRemember = false;
   state.releaseRemember = null;
+  state.failSaves = null;
 });
 
 describe("init", () => {
@@ -252,11 +259,13 @@ describe("persistence ordering", () => {
     state.saveCount = 0; // the next save is the one to stall
     state.stallFirstSaveAfter = "groups";
 
-    const group = useVault.getState().addGroup({ name: "Lazer", kind: "expense" });
+    // Not a name the seed already has, which would be refused as a duplicate.
+    const added = useVault.getState().addGroup({ name: "Projetos", kind: "expense" });
+    if (!added.ok) throw new Error(added.message);
     await vi.waitFor(() => expect(state.releaseStall).not.toBeNull());
 
     // A second mutation while the first save is suspended.
-    useVault.getState().addCategory({ name: "Cinema", groupId: group.id });
+    useVault.getState().addCategory({ name: "Cinema", groupId: added.group.id });
     await new Promise((r) => setTimeout(r, 5));
     state.releaseStall?.();
 
@@ -1035,5 +1044,294 @@ describe("marking an entry as a Transfer, and reverting it", () => {
 
     expect(plan.additions).toHaveLength(0);
     expect(plan.duplicates).toHaveLength(1);
+  });
+});
+
+describe("a save that fails", () => {
+  async function readyStore() {
+    const useVault = await freshStore();
+    seedFolder(DEFAULT_DIR, vaultWith({}));
+    await useVault.getState().init();
+    state.saves = [];
+    return useVault;
+  }
+
+  const account = { name: "Inter", type: "checking" as const, openingBalance: centavos(0) };
+
+  it("is reported instead of swallowed, so the user knows the change is not on disk", async () => {
+    const useVault = await readyStore();
+    state.failSaves = "Disco cheio";
+
+    useVault.getState().addAccount(account);
+
+    await vi.waitFor(() => expect(useVault.getState().saveError).toBe("Disco cheio"));
+    // The change is still on screen; only the disk is behind.
+    expect(useVault.getState().vault.accounts).toHaveLength(1);
+    expect(diskOf(DEFAULT_DIR).accounts).toEqual([]);
+  });
+
+  it("clears once a retry writes the whole vault", async () => {
+    const useVault = await readyStore();
+    state.failSaves = "Disco cheio";
+    useVault.getState().addAccount(account);
+    await vi.waitFor(() => expect(useVault.getState().saveError).not.toBeNull());
+
+    state.failSaves = null;
+    await useVault.getState().retrySave();
+
+    expect(useVault.getState().saveError).toBeNull();
+    expect(diskOf(DEFAULT_DIR).accounts).toMatchObject([{ name: "Inter" }]);
+  });
+
+  it("clears on the next change that saves, since every save writes everything", async () => {
+    const useVault = await readyStore();
+    state.failSaves = "Sem permissão";
+    useVault.getState().addAccount(account);
+    await vi.waitFor(() => expect(useVault.getState().saveError).not.toBeNull());
+
+    state.failSaves = null;
+    useVault.getState().addAccount({ ...account, name: "Poupança" });
+
+    await vi.waitFor(() => expect(useVault.getState().saveError).toBeNull());
+    expect(diskOf(DEFAULT_DIR).accounts).toHaveLength(2);
+  });
+
+  it("does not jam the chain: later saves still run", async () => {
+    const useVault = await readyStore();
+    state.failSaves = "falhou";
+    useVault.getState().addAccount(account);
+    await vi.waitFor(() => expect(useVault.getState().saveError).not.toBeNull());
+    state.failSaves = null;
+
+    useVault.getState().addAccount({ ...account, name: "B" });
+    await vi.waitFor(() => expect(state.saves).toHaveLength(1));
+  });
+});
+
+describe("refused actions write nothing", () => {
+  const ACC = "acc-1";
+
+  async function store() {
+    const useVault = await freshStore();
+    seedFolder(
+      DEFAULT_DIR,
+      vaultWith({
+        accounts: [{ id: ACC, name: "Inter", type: "checking", openingBalance: centavos(0) }],
+        groups: [
+          { id: "g-food", name: "Alimentação", kind: "expense" },
+          { id: "g-in", name: "Renda", kind: "income" },
+        ],
+        categories: [
+          { id: "cat-market", name: "Mercado", groupId: "g-food" },
+          { id: "cat-salary", name: "Salário", groupId: "g-in" },
+        ],
+        transactions: [
+          {
+            id: "e1",
+            kind: "expense",
+            date: "2026-10-02",
+            amount: centavos(1000),
+            description: "e1",
+            accountId: ACC,
+            categoryId: null,
+          },
+          {
+            id: "i1",
+            kind: "income",
+            date: "2026-10-05",
+            amount: centavos(5000),
+            description: "i1",
+            accountId: ACC,
+            categoryId: null,
+          },
+        ],
+      }),
+    );
+    await useVault.getState().init();
+    state.saves = [];
+    return useVault;
+  }
+
+  /** Give any save a chance to land, then prove none did. */
+  async function expectNoSave() {
+    await new Promise((r) => setTimeout(r, 10));
+    expect(state.saves).toHaveLength(0);
+  }
+
+  it("an Income under an expense Category is refused", async () => {
+    const useVault = await store();
+    const before = useVault.getState().vault;
+    const result = useVault.getState().addIncome({
+      date: "2026-10-07",
+      amount: centavos(100),
+      accountId: ACC,
+      categoryId: "cat-market",
+      description: "x",
+    });
+    expect(result.ok).toBe(false);
+    expect(useVault.getState().vault).toBe(before);
+    await expectNoSave();
+  });
+
+  it("a valid manual Expense is recorded with one save", async () => {
+    const useVault = await store();
+    const result = useVault.getState().addExpense({
+      date: "2026-10-07",
+      amount: centavos(100),
+      accountId: ACC,
+      categoryId: "cat-market",
+      description: "x",
+    });
+    expect(result.ok).toBe(true);
+    await vi.waitFor(() => expect(state.saves).toHaveLength(1));
+  });
+
+  it("classifying an Income into an expense Category changes nothing", async () => {
+    const useVault = await store();
+    useVault.getState().setTransactionCategory("i1", "cat-market");
+    useVault.getState().setTransactionCategoryMany(["i1"], "cat-market");
+    const income = useVault.getState().vault.transactions.find((t) => t.id === "i1");
+    expect(income).toMatchObject({ categoryId: null });
+    await expectNoSave();
+  });
+
+  it("a mixed bulk classification only touches the matching kind", async () => {
+    const useVault = await store();
+    useVault.getState().setTransactionCategoryMany(["e1", "i1"], "cat-market");
+    const byId = new Map(useVault.getState().vault.transactions.map((t) => [t.id, t]));
+    expect(byId.get("e1")).toMatchObject({ categoryId: "cat-market" });
+    expect(byId.get("i1")).toMatchObject({ categoryId: null });
+    await vi.waitFor(() => expect(state.saves).toHaveLength(1));
+  });
+
+  it("classifying into a Category the vault does not have changes nothing", async () => {
+    const useVault = await store();
+    useVault.getState().setTransactionCategoryMany(["e1"], "cat-ghost");
+    expect(useVault.getState().vault.transactions[0]).toMatchObject({ categoryId: null });
+    await expectNoSave();
+  });
+
+  it("a Budget on an income Category, or a negative one, is refused", async () => {
+    const useVault = await store();
+    expect(
+      useVault.getState().setBudget({ categoryId: "cat-salary", monthlyLimit: centavos(100) }).ok,
+    ).toBe(false);
+    expect(
+      useVault.getState().setBudget({ categoryId: "cat-market", monthlyLimit: centavos(-1) }).ok,
+    ).toBe(false);
+    await expectNoSave();
+  });
+
+  it("setting a Budget to the limit it already has saves nothing", async () => {
+    const useVault = await store();
+    useVault.getState().setBudget({ categoryId: "cat-market", monthlyLimit: centavos(800) });
+    await vi.waitFor(() => expect(state.saves).toHaveLength(1));
+    state.saves = [];
+    expect(
+      useVault.getState().setBudget({ categoryId: "cat-market", monthlyLimit: centavos(800) }).ok,
+    ).toBe(true);
+    await expectNoSave();
+  });
+
+  it("a duplicate Account name is refused", async () => {
+    const useVault = await store();
+    const result = useVault
+      .getState()
+      .addAccount({ name: "inter", type: "cash", openingBalance: centavos(0) });
+    expect(result.ok).toBe(false);
+    await expectNoSave();
+  });
+
+  it("deleting a Category in use, or an Account with Transactions, is refused", async () => {
+    const useVault = await store();
+    useVault.getState().setTransactionCategory("e1", "cat-market");
+    await vi.waitFor(() => expect(state.saves).toHaveLength(1));
+    state.saves = [];
+
+    expect(useVault.getState().deleteCategory("cat-market").ok).toBe(false);
+    expect(useVault.getState().deleteAccount(ACC).ok).toBe(false);
+    expect(useVault.getState().vault.categories).toHaveLength(2);
+    expect(useVault.getState().vault.accounts).toHaveLength(1);
+    await expectNoSave();
+  });
+});
+
+describe("managing Categories and Accounts", () => {
+  async function store() {
+    const useVault = await freshStore();
+    seedFolder(
+      DEFAULT_DIR,
+      vaultWith({
+        accounts: [{ id: "acc", name: "Inter", type: "checking", openingBalance: centavos(10000) }],
+        transactions: [
+          {
+            id: "e1",
+            kind: "expense",
+            date: "2026-10-02",
+            amount: centavos(2500),
+            description: "FARMACIA",
+            accountId: "acc",
+            categoryId: null,
+          },
+        ],
+      }),
+    );
+    await useVault.getState().init();
+    state.saves = [];
+    return useVault;
+  }
+
+  it("builds a tree, classifies into it, and tidies it up without losing a classification", async () => {
+    const useVault = await store();
+    const s = () => useVault.getState();
+
+    const group = s().addGroup({ name: "Saúde", kind: "expense" });
+    if (!group.ok) throw new Error(group.message);
+    const other = s().addGroup({ name: "Cuidados", kind: "expense" });
+    if (!other.ok) throw new Error(other.message);
+    const category = s().addCategory({ name: "Farmácia", groupId: group.group.id });
+    if (!category.ok) throw new Error(category.message);
+
+    s().setTransactionCategory("e1", category.category.id);
+    expect(s().renameCategory(category.category.id, "Remédios").ok).toBe(true);
+    expect(s().moveCategory(category.category.id, other.group.id).ok).toBe(true);
+
+    // Still classified, under the new name and Group.
+    expect(s().vault.transactions[0]).toMatchObject({ categoryId: category.category.id });
+    expect(s().vault.categories[0]).toMatchObject({ name: "Remédios", groupId: other.group.id });
+
+    // The emptied Group can go; the one holding the Category cannot.
+    expect(s().deleteGroup(group.group.id).ok).toBe(true);
+    expect(s().deleteGroup(other.group.id).ok).toBe(false);
+
+    // Seven changes, seven saves: wait for every one, or the last lands in the next test.
+    await vi.waitFor(() => expect(state.saves).toHaveLength(7));
+    expect(diskOf(DEFAULT_DIR).categories).toMatchObject([{ name: "Remédios" }]);
+    expect(diskOf(DEFAULT_DIR).groups).toMatchObject([{ name: "Cuidados" }]);
+  });
+
+  it("corrects an Account's opening balance, and the derived balance follows", async () => {
+    const useVault = await store();
+    const result = useVault.getState().editAccount("acc", {
+      name: "Banco Inter",
+      type: "checking",
+      openingBalance: centavos(50000),
+    });
+    expect(result.ok).toBe(true);
+    const account = useVault.getState().vault.accounts[0];
+    expect(account.name).toBe("Banco Inter");
+    expect(deriveAccountBalance(account, useVault.getState().vault.transactions)).toBe(47500);
+    await vi.waitFor(() => expect(state.saves).toHaveLength(1));
+  });
+
+  it("deletes an Account nothing uses", async () => {
+    const useVault = await store();
+    const added = useVault
+      .getState()
+      .addAccount({ name: "Carteira", type: "cash", openingBalance: centavos(0) });
+    if (!added.ok) throw new Error(added.message);
+    expect(useVault.getState().deleteAccount(added.account.id).ok).toBe(true);
+    expect(useVault.getState().vault.accounts.map((a) => a.name)).toEqual(["Inter"]);
+    await vi.waitFor(() => expect(state.saves).toHaveLength(2));
   });
 });

@@ -538,7 +538,8 @@ describe("TransactionsPanel editing and deleting", () => {
       show(vault);
       await userEvent.click(screen.getByLabelText("Excluir MERCADO"));
 
-      const prompt = screen.getByText(/Excluir .MERCADO. de 2026-10-02/);
+      // Dates read the Brazilian way on screen: day, month, year.
+      const prompt = screen.getByText(/Excluir .MERCADO. de 02\/10\/2026/);
       expect(prompt).toBeInTheDocument();
       expect(prompt).toHaveTextContent("300,00");
       // Nothing is gone yet.
@@ -831,5 +832,68 @@ describe("marking an entry as a Transfer", () => {
     expect(
       screen.queryByRole("checkbox", { name: "Selecionar APLICACAO CDB" }),
     ).not.toBeInTheDocument();
+  });
+});
+
+describe("TransactionsPanel add form", () => {
+  it("clears a Category of the other kind when the kind changes, so it can't be saved under the wrong one", async () => {
+    const user = userEvent.setup();
+    show(base);
+    await user.selectOptions(screen.getByLabelText("Nova transação: categoria"), "cat-market");
+    await user.selectOptions(screen.getByLabelText("Nova transação: tipo"), "income");
+
+    expect(screen.getByLabelText("Nova transação: categoria")).toHaveValue("");
+
+    await user.type(screen.getByLabelText("Nova transação: valor"), "10,00");
+    await user.selectOptions(screen.getByLabelText("Nova transação: conta"), INTER);
+    await user.click(screen.getByRole("button", { name: "Adicionar transação" }));
+
+    expect(screen.getByText("Escolha uma categoria.")).toBeInTheDocument();
+    expect(useVault.getState().vault.transactions).toEqual([]);
+  });
+
+  it("records an Expense, reading a dot-decimal amount as reais and centavos", async () => {
+    const user = userEvent.setup();
+    show(base);
+    await user.type(screen.getByLabelText("Nova transação: valor"), "49.90");
+    await user.type(screen.getByLabelText("Nova transação: descrição"), "Feira");
+    await user.selectOptions(screen.getByLabelText("Nova transação: conta"), INTER);
+    await user.selectOptions(screen.getByLabelText("Nova transação: categoria"), "cat-market");
+    await user.click(screen.getByRole("button", { name: "Adicionar transação" }));
+
+    expect(useVault.getState().vault.transactions).toMatchObject([
+      { kind: "expense", amount: 4990, description: "Feira", categoryId: "cat-market" },
+    ]);
+    expect(screen.getByLabelText("Nova transação: valor")).toHaveValue("");
+  });
+
+  it("shows the domain's refusal and keeps what was typed", async () => {
+    const user = userEvent.setup();
+    show(base);
+    await user.selectOptions(screen.getByLabelText("Nova transação: tipo"), "transfer");
+    await user.type(screen.getByLabelText("Nova transação: valor"), "100");
+    await user.selectOptions(screen.getByLabelText("Nova transação: conta de origem"), INTER);
+    await user.selectOptions(screen.getByLabelText("Nova transação: conta de destino"), INTER);
+    await user.click(screen.getByRole("button", { name: "Adicionar transação" }));
+
+    expect(screen.getByText("Origem e destino devem ser diferentes.")).toBeInTheDocument();
+    expect(screen.getByLabelText("Nova transação: valor")).toHaveValue("100");
+    expect(useVault.getState().vault.transactions).toEqual([]);
+  });
+
+  it("lists Categories under their Group", () => {
+    show(base);
+    const select = screen.getByLabelText("Nova transação: categoria");
+    const group = select.querySelector('optgroup[label="Alimentação"]');
+    expect(group).not.toBeNull();
+    expect(within(group as HTMLElement).getByRole("option", { name: "Mercado" })).toBeInTheDocument();
+  });
+
+  it("shows each row's date the Brazilian way", () => {
+    show({
+      ...base,
+      transactions: [expense("e1", "2026-10-02", 1000, "MERCADO", "cat-market")],
+    });
+    expect(listText()).toContain("02/10/2026");
   });
 });

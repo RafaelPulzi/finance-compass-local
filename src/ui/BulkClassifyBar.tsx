@@ -1,4 +1,4 @@
-import type { Category } from "../domain/types";
+import { CategoryOptions, type CategoryTree } from "./CategoryOptions";
 
 interface Props {
   selectedCount: number;
@@ -8,19 +8,13 @@ interface Props {
    * selection has no Category that could apply to all of it.
    */
   kind: "income" | "expense" | "mixed";
-  categories: readonly Category[];
+  tree: CategoryTree;
   onAssign: (categoryId: string) => void;
   onClear: () => void;
 }
 
 /** Appears only while something is selected: assign one Category to all of it. */
-export function BulkClassifyBar({
-  selectedCount,
-  kind,
-  categories,
-  onAssign,
-  onClear,
-}: Props) {
+export function BulkClassifyBar({ selectedCount, kind, tree, onAssign, onClear }: Props) {
   return (
     <div className="mb-3 flex flex-wrap items-center gap-2 rounded-md border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm dark:border-emerald-800 dark:bg-emerald-950">
       <span className="font-medium text-emerald-900 dark:text-emerald-200">
@@ -40,11 +34,7 @@ export function BulkClassifyBar({
           onChange={(e) => e.target.value && onAssign(e.target.value)}
         >
           <option value="">Classificar como…</option>
-          {categories.map((c) => (
-            <option key={c.id} value={c.id}>
-              {c.name}
-            </option>
-          ))}
+          <CategoryOptions tree={tree} />
         </select>
       )}
 

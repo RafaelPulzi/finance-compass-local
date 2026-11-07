@@ -1,4 +1,6 @@
 import { type FormEvent, useMemo, useState } from "react";
+import { categoryTree, treeHas } from "../domain/categories";
+import { formatDateBR } from "../domain/dates";
 import { formatBRL, parseBRL } from "../domain/money";
 import {
   NO_FILTER,
@@ -6,9 +8,10 @@ import {
   monthsWithTransactions,
   selectTransactions,
 } from "../domain/transactionQuery";
-import type { Category, Id, Transaction } from "../domain/types";
+import type { Id, Transaction } from "../domain/types";
 import { useVault } from "../store/useVault";
 import { BulkClassifyBar } from "./BulkClassifyBar";
+import { CategoryOptions, type CategoryTree } from "./CategoryOptions";
 import { TransactionEditForm } from "./TransactionEditForm";
 import { TransactionFilters } from "./TransactionFilters";
 import { TransferMarkForm } from "./TransferMarkForm";
@@ -110,18 +113,22 @@ export function TransactionsPanel() {
     [vault.categories],
   );
 
-  /** Categories split by the kind of transaction they can classify. */
-  const categoriesByKind = useMemo(() => {
-    const groupKind = new Map(vault.groups.map((g) => [g.id, g.kind]));
-    const byKind: Record<"income" | "expense", Category[]> = { income: [], expense: [] };
-    for (const category of vault.categories) {
-      const k = groupKind.get(category.groupId);
-      if (k) byKind[k].push(category);
-    }
-    return byKind;
-  }, [vault.groups, vault.categories]);
+  /** Categories split by the kind of transaction they can classify, under their Groups. */
+  const treesByKind = useMemo<Record<"income" | "expense", CategoryTree>>(
+    () => ({ income: categoryTree(vault, "income"), expense: categoryTree(vault, "expense") }),
+    [vault],
+  );
 
-  const categoryOptions = kind === "transfer" ? [] : categoriesByKind[kind];
+  /**
+   * Income and expense Categories are separate sets, so a Category picked for
+   * one kind is cleared when the kind changes. Keeping it is how an Income used
+   * to be saved under an expense Category: the select showed nothing chosen,
+   * but the stale id was still there and went with the submit.
+   */
+  function changeKind(next: Kind) {
+    setKind(next);
+    if (next === "transfer" || !treeHas(treesByKind[next], categoryId)) setCategoryId("");
+  }
 
   const months = useMemo(() => monthsWithTransactions(vault), [vault]);
   const selection = useMemo(() => selectTransactions(vault, filter), [vault, filter]);
@@ -179,17 +186,17 @@ export function TransactionsPanel() {
     }
     if (!accountId) return setError("Escolha uma conta.");
 
+    let result;
     if (kind === "transfer") {
       if (!toAccountId) return setError("Escolha a conta de destino.");
-      if (toAccountId === accountId)
-        return setError("Origem e destino devem ser diferentes.");
-      addTransfer({ date, amount: value, fromAccountId: accountId, toAccountId, description });
+      result = addTransfer({ date, amount: value, fromAccountId: accountId, toAccountId, description });
     } else {
       if (!categoryId) return setError("Escolha uma categoria.");
       const payload = { date, amount: value, accountId, categoryId, description };
-      if (kind === "income") addIncome(payload);
-      else addExpense(payload);
+      result = kind === "income" ? addIncome(payload) : addExpense(payload);
     }
+    // The domain has the last word; a refusal keeps what was typed so it can be fixed.
+    if (!result.ok) return setError(result.message);
     setAmount("");
     setDescription("");
   }
@@ -211,27 +218,46 @@ export function TransactionsPanel() {
       </div>
 
       <form onSubmit={submit} className="mb-4 grid grid-cols-2 gap-2">
-        <select className={inputClass} value={kind} onChange={(e) => setKind(e.target.value as Kind)}>
+        <select
+          aria-label="Nova transação: tipo"
+          className={inputClass}
+          value={kind}
+          onChange={(e) => changeKind(e.target.value as Kind)}
+        >
           <option value="expense">Despesa</option>
           <option value="income">Receita</option>
           <option value="transfer">Transferência</option>
         </select>
-        <input className={inputClass} type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+        <input
+          aria-label="Nova transação: data"
+          className={inputClass}
+          type="date"
+          value={date}
+          onChange={(e) => setDate(e.target.value)}
+        />
 
         <input
+          aria-label="Nova transação: valor"
           className={`${inputClass} text-right`}
           placeholder="Valor (ex: 49,90)"
+          inputMode="decimal"
           value={amount}
           onChange={(e) => setAmount(e.target.value)}
         />
         <input
+          aria-label="Nova transação: descrição"
           className={inputClass}
           placeholder="Descrição"
           value={description}
           onChange={(e) => setDescription(e.target.value)}
         />
 
-        <select className={inputClass} value={accountId} onChange={(e) => setAccountId(e.target.value)}>
+        <select
+          aria-label={kind === "transfer" ? "Nova transação: conta de origem" : "Nova transação: conta"}
+          className={inputClass}
+          value={accountId}
+          onChange={(e) => setAccountId(e.target.value)}
+        >
           <option value="">{kind === "transfer" ? "Conta de origem" : "Conta"}</option>
           {vault.accounts.map((a) => (
             <option key={a.id} value={a.id}>{a.name}</option>
@@ -239,18 +265,26 @@ export function TransactionsPanel() {
         </select>
 
         {kind === "transfer" ? (
-          <select className={inputClass} value={toAccountId} onChange={(e) => setToAccountId(e.target.value)}>
+          <select
+            aria-label="Nova transação: conta de destino"
+            className={inputClass}
+            value={toAccountId}
+            onChange={(e) => setToAccountId(e.target.value)}
+          >
             <option value="">Conta de destino</option>
             {vault.accounts.map((a) => (
               <option key={a.id} value={a.id}>{a.name}</option>
             ))}
           </select>
         ) : (
-          <select className={inputClass} value={categoryId} onChange={(e) => setCategoryId(e.target.value)}>
+          <select
+            aria-label="Nova transação: categoria"
+            className={inputClass}
+            value={categoryId}
+            onChange={(e) => setCategoryId(e.target.value)}
+          >
             <option value="">Categoria</option>
-            {categoryOptions.map((c) => (
-              <option key={c.id} value={c.id}>{c.name}</option>
-            ))}
+            <CategoryOptions tree={treesByKind[kind]} />
           </select>
         )}
 
@@ -267,7 +301,7 @@ export function TransactionsPanel() {
         filter={filter}
         onChange={changeFilter}
         accounts={vault.accounts}
-        categories={vault.categories}
+        treesByKind={treesByKind}
         months={months}
       />
 
@@ -300,7 +334,7 @@ export function TransactionsPanel() {
         <BulkClassifyBar
           selectedCount={selected.size}
           kind={selectedKind}
-          categories={selectedKind === "mixed" ? [] : categoriesByKind[selectedKind]}
+          tree={selectedKind === "mixed" ? [] : treesByKind[selectedKind]}
           onAssign={assignToSelected}
           onClear={() => setSelected(new Set())}
         />
@@ -320,7 +354,7 @@ export function TransactionsPanel() {
               <TransactionEditForm
                 transaction={tx}
                 accounts={vault.accounts}
-                categoriesByKind={categoriesByKind}
+                treesByKind={treesByKind}
                 onSave={(changes) => {
                   const result = editTransaction(tx.id, changes);
                   // A refused edit keeps the form open with its message showing.
@@ -346,7 +380,7 @@ export function TransactionsPanel() {
                 {/* Naming the Transaction is what makes this a confirmation and
                     not just a second click. */}
                 <span className="text-slate-700 dark:text-slate-200">
-                  Excluir “{tx.description || "(sem descrição)"}” de {tx.date},{" "}
+                  Excluir “{tx.description || "(sem descrição)"}” de {formatDateBR(tx.date)},{" "}
                   <span className="font-mono">{formatBRL(tx.amount)}</span>?
                 </span>
                 <button
@@ -388,13 +422,13 @@ export function TransactionsPanel() {
               <div className="text-xs text-slate-500">
                 {tx.kind === "transfer" ? (
                   <>
-                    {tx.date} · {accountName.get(tx.fromAccountId) ?? "?"} →{" "}
+                    {formatDateBR(tx.date)} · {accountName.get(tx.fromAccountId) ?? "?"} →{" "}
                     {accountName.get(tx.toAccountId) ?? "?"}
                   </>
                 ) : tx.categoryId === null ? (
                   // Imported transactions arrive uncategorized; classify them here.
                   <span className="flex items-center gap-1">
-                    {tx.date} ·
+                    {formatDateBR(tx.date)} ·
                     <select
                       aria-label={`Categoria de ${tx.description || "transação sem descrição"}`}
                       className="rounded border border-amber-400 bg-amber-50 px-1 py-0.5 text-xs text-amber-900 dark:bg-amber-950 dark:text-amber-200"
@@ -404,15 +438,13 @@ export function TransactionsPanel() {
                       }
                     >
                       <option value="">Sem categoria</option>
-                      {categoriesByKind[tx.kind].map((c) => (
-                        <option key={c.id} value={c.id}>{c.name}</option>
-                      ))}
+                      <CategoryOptions tree={treesByKind[tx.kind]} />
                     </select>
                     · {accountName.get(tx.accountId) ?? "?"}
                   </span>
                 ) : (
                   <>
-                    {tx.date} · {categoryName.get(tx.categoryId) ?? "?"} ·{" "}
+                    {formatDateBR(tx.date)} · {categoryName.get(tx.categoryId) ?? "?"} ·{" "}
                     {accountName.get(tx.accountId) ?? "?"}
                   </>
                 )}

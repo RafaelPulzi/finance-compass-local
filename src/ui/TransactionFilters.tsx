@@ -1,7 +1,8 @@
 import type { MonthKey } from "../domain/reporting";
 import type { CategoryFilter, TransactionFilter } from "../domain/transactionQuery";
 import { NO_FILTER } from "../domain/transactionQuery";
-import type { Account, Category, Transaction } from "../domain/types";
+import type { Account, Transaction } from "../domain/types";
+import { CategoryOptions, type CategoryTree } from "./CategoryOptions";
 import { monthLongLabel } from "./charts/format";
 
 const KIND_LABELS: Record<Transaction["kind"], string> = {
@@ -37,7 +38,7 @@ interface Props {
   filter: TransactionFilter;
   onChange: (next: TransactionFilter) => void;
   accounts: readonly Account[];
-  categories: readonly Category[];
+  treesByKind: Record<"income" | "expense", CategoryTree>;
   months: readonly MonthKey[];
 }
 
@@ -46,7 +47,7 @@ export function TransactionFilters({
   filter,
   onChange,
   accounts,
-  categories,
+  treesByKind,
   months,
 }: Props) {
   const selectClass =
@@ -125,11 +126,16 @@ export function TransactionFilters({
       >
         <option value={ANY}>Todas as categorias</option>
         <option value={NONE}>Sem categoria</option>
-        {categories.map((c) => (
-          <option key={c.id} value={idValue(c.id)}>
-            {c.name}
-          </option>
-        ))}
+        <CategoryOptions
+          tree={treesByKind.expense}
+          value={idValue}
+          groupLabel={(g) => `${g.name} (despesa)`}
+        />
+        <CategoryOptions
+          tree={treesByKind.income}
+          value={idValue}
+          groupLabel={(g) => `${g.name} (receita)`}
+        />
       </select>
 
       {isFiltered && (

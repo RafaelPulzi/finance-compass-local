@@ -1,5 +1,7 @@
+import { categoryKind } from "./categories";
+import { isValidISODate } from "./dates";
 import type { Centavos } from "./money";
-import type { CategoryKind, Id, ISODate, Transaction, Vault } from "./types";
+import type { Id, ISODate, Transaction, Vault } from "./types";
 
 /**
  * Correcting a Transaction that is already recorded.
@@ -33,17 +35,8 @@ export type EditOutcome =
   | { ok: true; transaction: Transaction }
   | { ok: false; message: string };
 
-const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
-
 function hasAccount(vault: Vault, accountId: Id): boolean {
   return vault.accounts.some((a) => a.id === accountId);
-}
-
-/** The kind of Category this is, or undefined if the Vault has no such Category. */
-function categoryKind(vault: Vault, categoryId: Id): CategoryKind | undefined {
-  const category = vault.categories.find((c) => c.id === categoryId);
-  if (category === undefined) return undefined;
-  return vault.groups.find((g) => g.id === category.groupId)?.kind;
 }
 
 /**
@@ -69,7 +62,7 @@ export function editedTransaction(
   }
 
   const date = changes.date ?? current.date;
-  if (!ISO_DATE.test(date)) {
+  if (!isValidISODate(date)) {
     return { ok: false, message: "Informe uma data válida." };
   }
 
@@ -93,6 +86,24 @@ export function editedTransaction(
     }
     if (fromAccountId === toAccountId) {
       return { ok: false, message: "Origem e destino devem ser diferentes." };
+    }
+
+    // A recovered Transfer's imported side is a fact from the bank: the
+    // Statement of that Account said the money left it (or arrived in it).
+    // Moving that side to another Account, or swapping the direction, would
+    // contradict the Statement and leave nothing for "desfazer" to restore.
+    // The other side is the user's own judgement and stays editable.
+    for (const entry of current.recoveredFrom ?? []) {
+      const side = entry.accountId === current.fromAccountId ? "from" : "to";
+      const stillThere =
+        side === "from" ? fromAccountId === entry.accountId : toAccountId === entry.accountId;
+      if (!stillThere) {
+        return {
+          ok: false,
+          message:
+            "A conta do lançamento importado não pode mudar. Desfaça a transferência para corrigi-la.",
+        };
+      }
     }
 
     return {

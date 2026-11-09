@@ -9,7 +9,12 @@ import { seedVault } from "../domain/seed";
 import { type ImportPlan, toTransactions } from "../domain/statementImport";
 import { type NewTransaction, createdTransaction } from "../domain/transactionCreate";
 import { type TransactionEdit, editedTransaction } from "../domain/transactionEdit";
-import { entryFromTransfer, transferFromEntry } from "../domain/transferRecovery";
+import {
+  type SkippedEntry,
+  entryFromTransfer,
+  transferFromEntry,
+  transfersFromEntries,
+} from "../domain/transferRecovery";
 import type {
   Account,
   Budget,
@@ -40,6 +45,19 @@ export type VaultSwitchResult = ActionResult;
 
 /** Outcome of editing a Transaction, reported back to the form that asked. */
 export type TransactionEditResult = ActionResult;
+
+/**
+ * Outcome of marking a selection as Transfers: how many became one, and every
+ * entry that could not, with its reason.
+ *
+ * The skips are carried back rather than counted and dropped. A batch chosen by
+ * description will sometimes include an entry that cannot convert, and a user
+ * who is told "188 converted" while 9 vanished silently has been misled about
+ * their own records.
+ */
+export type BulkTransferResult =
+  | { ok: true; converted: number; skipped: readonly SkippedEntry[] }
+  | { ok: false; message: string };
 
 type Refusal = { ok: false; message: string };
 
@@ -155,6 +173,20 @@ interface VaultState {
     transactionId: Id,
     otherAccountId: Id,
   ) => TransactionEditResult;
+  /**
+   * Mark a whole selection as Transfers against one other Account — the only
+   * practical way through a Statement's worth of internal moves.
+   *
+   * Deliberately not a loop over `markTransactionAsTransfer`, for the same
+   * reason `setTransactionCategoryMany` is not a loop: every mutation persists
+   * the whole vault, so N calls would queue N multi-file writes onto the save
+   * chain. This is one mutation and therefore one save, whether it converts two
+   * entries or two hundred.
+   */
+  markTransactionsAsTransfer: (
+    transactionIds: readonly Id[],
+    otherAccountId: Id,
+  ) => BulkTransferResult;
   /**
    * Undo a marking, restoring the imported entry the Transfer was recovered
    * from — including its `fitid`, without which the next Import of that
@@ -519,6 +551,28 @@ export const useVault = create<VaultState>((set, get) => {
         ),
       });
       return { ok: true };
+    },
+
+    markTransactionsAsTransfer(transactionIds, otherAccountId) {
+      const vault = get().vault;
+      const outcome = transfersFromEntries(vault, transactionIds, otherAccountId);
+      if (!outcome.ok) return { ok: false, message: outcome.message };
+
+      if (outcome.transfers.length > 0) {
+        // Each Transfer kept the id of the entry it replaces, so the whole batch
+        // is spliced in by one pass over the Transactions — one new vault, one
+        // save.
+        const byId = new Map(outcome.transfers.map((tx) => [tx.id, tx]));
+        mutate({
+          ...vault,
+          transactions: vault.transactions.map((tx) => byId.get(tx.id) ?? tx),
+        });
+      }
+      return {
+        ok: true,
+        converted: outcome.transfers.length,
+        skipped: outcome.skipped,
+      };
     },
 
     revertTransferToEntry(transferId) {

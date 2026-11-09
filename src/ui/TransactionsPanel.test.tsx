@@ -897,3 +897,133 @@ describe("TransactionsPanel add form", () => {
     expect(listText()).toContain("02/10/2026");
   });
 });
+
+describe("marking a whole selection as Transfers", () => {
+  const vault: Vault = {
+    ...base,
+    transactions: [
+      expense("e1", "2026-10-02", 25001, "APLICACAO CDB 1", null),
+      expense("e2", "2026-10-03", 25001, "APLICACAO CDB 2", null),
+      {
+        id: "i1",
+        kind: "income",
+        date: "2026-10-04",
+        amount: centavos(10000),
+        description: "RESGATE CDB",
+        accountId: INTER,
+        categoryId: null,
+      },
+    ],
+  };
+
+  const kindOf = (id: string) =>
+    useVault.getState().vault.transactions.find((t) => t.id === id)?.kind;
+
+  /** Ordinary spaces, since formatBRL puts a non-breaking one after "R$". */
+  const plain = (text: string) => text.replace(/ /g, " ");
+
+  async function selectBoth() {
+    const user = userEvent.setup();
+    await user.click(screen.getByLabelText("Selecionar APLICACAO CDB 1"));
+    await user.click(screen.getByLabelText("Selecionar RESGATE CDB"));
+    return user;
+  }
+
+  it("offers the action even when the selection mixes Incomes and Expenses", async () => {
+    show(vault);
+    await selectBoth();
+
+    // No Category can apply to both kinds, but each entry's own kind gives its
+    // Transfer a direction, so marking is still available.
+    expect(screen.queryByLabelText("Categoria para as selecionadas")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Outra conta das transferências")).toBeInTheDocument();
+  });
+
+  it("says which balance moves, and by how much, before anything is converted", async () => {
+    show(vault);
+    const user = await selectBoth();
+
+    await user.selectOptions(
+      screen.getByLabelText("Outra conta das transferências"),
+      "acc-savings",
+    );
+
+    const warning = screen.getByText(/Esses valores deixam de contar/);
+    expect(plain(warning.textContent ?? "")).toContain("Poupança");
+    expect(plain(warning.textContent ?? "")).toContain("aumenta R$ 250,01");
+    expect(plain(warning.textContent ?? "")).toContain("diminui R$ 100,00");
+    // Still nothing converted: the warning is read before the click, not after.
+    expect(kindOf("e1")).toBe("expense");
+    expect(kindOf("i1")).toBe("income");
+  });
+
+  it("converts the whole selection on one confirmation and says how many", async () => {
+    show(vault);
+    const user = await selectBoth();
+    await user.selectOptions(
+      screen.getByLabelText("Outra conta das transferências"),
+      "acc-savings",
+    );
+
+    await user.click(screen.getByRole("button", { name: /Confirmar 2 transferências/ }));
+
+    expect(kindOf("e1")).toBe("transfer");
+    expect(kindOf("i1")).toBe("transfer");
+    // The untouched row is still what it was.
+    expect(kindOf("e2")).toBe("expense");
+    expect(screen.getByRole("status").textContent).toContain(
+      "2 lançamentos viraram transferências.",
+    );
+  });
+
+  it("clears the selection once the batch has run", async () => {
+    show(vault);
+    const user = await selectBoth();
+    await user.selectOptions(
+      screen.getByLabelText("Outra conta das transferências"),
+      "acc-savings",
+    );
+
+    await user.click(screen.getByRole("button", { name: /Confirmar/ }));
+
+    expect(screen.queryByLabelText("Outra conta das transferências")).not.toBeInTheDocument();
+  });
+
+  it("names what it skipped instead of counting it as converted", async () => {
+    show({
+      ...vault,
+      // This one is already on the Account the batch points at.
+      transactions: [
+        ...vault.transactions,
+        expense("e3", "2026-10-05", 25001, "JA NA POUPANCA", null, SAVINGS),
+      ],
+    });
+    const user = userEvent.setup();
+    await user.click(screen.getByLabelText("Selecionar APLICACAO CDB 1"));
+    await user.click(screen.getByLabelText("Selecionar JA NA POUPANCA"));
+
+    await user.selectOptions(
+      screen.getByLabelText("Outra conta das transferências"),
+      "acc-savings",
+    );
+    await user.click(screen.getByRole("button", { name: /Confirmar/ }));
+
+    const notice = screen.getByRole("status").textContent ?? "";
+    expect(notice).toContain("1 lançamento virou transferência.");
+    expect(notice).toContain("1 ignorado");
+    expect(notice).toContain("Escolha uma conta diferente da do lançamento.");
+    expect(kindOf("e3")).toBe("expense");
+  });
+
+  it("says a second Account is needed when the Vault has only one", async () => {
+    show({
+      ...vault,
+      accounts: [base.accounts[0]],
+      transactions: [vault.transactions[0]],
+    });
+    const user = userEvent.setup();
+    await user.click(screen.getByLabelText("Selecionar APLICACAO CDB 1"));
+
+    expect(screen.getByText(/Só existe uma conta no cofre/)).toBeInTheDocument();
+  });
+});

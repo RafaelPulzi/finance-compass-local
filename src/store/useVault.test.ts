@@ -1335,3 +1335,179 @@ describe("managing Categories and Accounts", () => {
     await vi.waitFor(() => expect(state.saves).toHaveLength(2));
   });
 });
+
+describe("marking a whole selection as Transfers", () => {
+  const CHECKING = "acc-checking";
+  const POCKET = "acc-pocket";
+
+  /**
+   * Twenty imported entries on one checking Account — ten `APLICACAO` Expenses
+   * and ten `RESGATE` Incomes of R$ 100,00 each — which is the shape of the real
+   * Vault in miniature: hundreds of entries moving money in and out of an
+   * investment pocket inside the same bank.
+   */
+  async function storeWithManyEntries() {
+    const useVault = await freshStore();
+    state.loadResult = vaultWith({
+      accounts: [
+        { id: CHECKING, name: "Banco Inter", type: "checking", openingBalance: centavos(100000) },
+        { id: POCKET, name: "Inter CDB", type: "savings", openingBalance: centavos(0) },
+      ],
+      transactions: Array.from({ length: 20 }, (_, i) => ({
+        id: `e${i}`,
+        kind: i % 2 === 0 ? ("expense" as const) : ("income" as const),
+        date: "2026-10-02",
+        amount: centavos(10000),
+        description: i % 2 === 0 ? "APLICACAO CDB" : "RESGATE CDB",
+        accountId: CHECKING,
+        categoryId: null,
+        fitid: `FIT-${i}`,
+      })) satisfies Transaction[],
+    });
+    await useVault.getState().init();
+    await vi.waitFor(() => expect(state.inFlight).toBe(0));
+    state.saves = [];
+    return useVault;
+  }
+
+  const ids = Array.from({ length: 20 }, (_, i) => `e${i}`);
+
+  const balanceOf = (
+    useVault: Awaited<ReturnType<typeof freshStore>>,
+    accountId: string,
+  ) => {
+    const vault = useVault.getState().vault;
+    const account = vault.accounts.find((a) => a.id === accountId);
+    if (account === undefined) throw new Error(`no account ${accountId}`);
+    return deriveAccountBalance(account, vault.transactions);
+  };
+
+  /**
+   * The load-bearing invariant, and the reason this action exists at all: one
+   * mutation, so one save, however many entries it converts. A loop over
+   * `markTransactionAsTransfer` would queue twenty whole-vault writes onto the
+   * save chain — the condition that tore the vault before.
+   */
+  it("converts twenty entries in exactly one save", async () => {
+    const useVault = await storeWithManyEntries();
+
+    const result = useVault.getState().markTransactionsAsTransfer(ids, POCKET);
+
+    expect(result).toEqual({ ok: true, converted: 20, skipped: [] });
+    await vi.waitFor(() => expect(state.saves).toHaveLength(1));
+    // Give any stray queued save a chance to show up before claiming there is none.
+    await vi.waitFor(() => expect(state.inFlight).toBe(0));
+    expect(state.saves).toHaveLength(1);
+  });
+
+  it("leaves the Account the entries were imported on exactly where it was", async () => {
+    const useVault = await storeWithManyEntries();
+    // 1000,00 - 10 x 100,00 + 10 x 100,00
+    expect(balanceOf(useVault, CHECKING)).toBe(100000);
+
+    useVault.getState().markTransactionsAsTransfer(ids, POCKET);
+
+    expect(balanceOf(useVault, CHECKING)).toBe(100000);
+    await vi.waitFor(() => expect(state.saves).toHaveLength(1));
+  });
+
+  it("moves the chosen Account by the two directions netted against each other", async () => {
+    const useVault = await storeWithManyEntries();
+
+    useVault.getState().markTransactionsAsTransfer(ids, POCKET);
+
+    // Ten Expenses arrived there and ten Incomes left it: the same money going
+    // back and forth, which is why the pocket ends level.
+    expect(balanceOf(useVault, POCKET)).toBe(0);
+    await vi.waitFor(() => expect(state.saves).toHaveLength(1));
+  });
+
+  it("stops the converted entries counting as Income or Expense", async () => {
+    const useVault = await storeWithManyEntries();
+
+    useVault.getState().markTransactionsAsTransfer(ids, POCKET);
+
+    const transactions = useVault.getState().vault.transactions;
+    expect(transactions).toHaveLength(20);
+    expect(transactions.every((tx) => tx.kind === "transfer")).toBe(true);
+    await vi.waitFor(() => expect(state.saves).toHaveLength(1));
+  });
+
+  it("writes every converted entry to disk with the bank id it was recovered from", async () => {
+    const useVault = await storeWithManyEntries();
+
+    useVault.getState().markTransactionsAsTransfer(ids, POCKET);
+    await vi.waitFor(() => expect(state.saves).toHaveLength(1));
+
+    const onDisk = diskOf(DEFAULT_DIR).transactions as Transaction[];
+    expect(onDisk).toHaveLength(20);
+    expect(onDisk[0]).toMatchObject({
+      kind: "transfer",
+      recoveredFrom: [{ fitid: "FIT-0", accountId: CHECKING }],
+    });
+    expect(onDisk[19]).toMatchObject({
+      recoveredFrom: [{ fitid: "FIT-19", accountId: CHECKING }],
+    });
+  });
+
+  it("converts what it can, names what it skipped, and still saves once", async () => {
+    const useVault = await storeWithManyEntries();
+    // One entry is already a Transfer by the time the batch runs.
+    useVault.getState().markTransactionAsTransfer("e0", POCKET);
+    await vi.waitFor(() => expect(state.saves).toHaveLength(1));
+    state.saves = [];
+
+    const result = useVault.getState().markTransactionsAsTransfer(ids, POCKET);
+
+    expect(result).toMatchObject({
+      ok: true,
+      converted: 19,
+      skipped: [{ transactionId: "e0", message: "Essa transação já é uma transferência." }],
+    });
+    await vi.waitFor(() => expect(state.saves).toHaveLength(1));
+  });
+
+  it("writes nothing when every selected entry is skipped", async () => {
+    const useVault = await storeWithManyEntries();
+    useVault.getState().markTransactionsAsTransfer(ids, POCKET);
+    await vi.waitFor(() => expect(state.saves).toHaveLength(1));
+    state.saves = [];
+
+    // Nothing left to convert: they are all Transfers already.
+    const result = useVault.getState().markTransactionsAsTransfer(ids, POCKET);
+
+    expect(result).toMatchObject({ ok: true, converted: 0 });
+    expect(state.saves).toHaveLength(0);
+  });
+
+  it("refuses an Account the Vault doesn't have and writes nothing", async () => {
+    const useVault = await storeWithManyEntries();
+
+    const result = useVault.getState().markTransactionsAsTransfer(ids, "acc-nope");
+
+    expect(result).toEqual({ ok: false, message: "Conta inexistente." });
+    expect(useVault.getState().vault.transactions[0]).toMatchObject({ kind: "expense" });
+    expect(state.saves).toHaveLength(0);
+  });
+
+  it("re-importing the Statement adds none of the converted entries back", async () => {
+    const useVault = await storeWithManyEntries();
+    useVault.getState().markTransactionsAsTransfer(ids, POCKET);
+    await vi.waitFor(() => expect(state.saves).toHaveLength(1));
+
+    const plan = planImport(
+      ids.map((id, i) => ({
+        fitid: `FIT-${i}`,
+        date: "2026-10-02",
+        amount: i % 2 === 0 ? -10000 : 10000,
+        description: id,
+        trntype: i % 2 === 0 ? "DEBIT" : "CREDIT",
+      })),
+      CHECKING,
+      useVault.getState().vault.transactions,
+    );
+
+    expect(plan.additions).toHaveLength(0);
+    expect(plan.duplicates).toHaveLength(20);
+  });
+});

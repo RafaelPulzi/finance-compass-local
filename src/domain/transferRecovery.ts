@@ -143,3 +143,67 @@ export function entryFromTransfer(vault: Vault, transferId: Id): RecoveryOutcome
     },
   };
 }
+
+// --- Marking many entries at once -----------------------------------------
+
+/** One entry that could not become a Transfer, and why it could not. */
+export interface SkippedEntry {
+  transactionId: Id;
+  message: string;
+}
+
+export type BulkRecoveryOutcome =
+  | {
+      ok: true;
+      /** The Transfers, each keeping the id of the entry it replaces. */
+      transfers: Transaction[];
+      skipped: SkippedEntry[];
+    }
+  | { ok: false; message: string };
+
+/**
+ * The same marking, decided for many entries against one other Account.
+ *
+ * A real Statement does not hold one internal move, it holds hundreds: a vault
+ * built from two years of one checking account can carry ~190 `RESGATE` and ~90
+ * `APLICACAO` entries, every one of them the same judgement. Marking them one
+ * at a time is not a smaller version of the same work, it is work nobody
+ * finishes, and an unfinished pass leaves the totals as wrong as before.
+ *
+ * Still one decision per entry, taken by `transferFromEntry`, so a batch can
+ * never mean something the single marking would not. The direction of each
+ * Transfer comes from that entry's own kind, which is why a selection mixing
+ * Expenses and Incomes is fine here: money leaving and money arriving both
+ * describe the same other Account.
+ *
+ * A batch is partial rather than all-or-nothing. Selecting by description
+ * ("everything matching APLICACAO") sweeps in the occasional entry that cannot
+ * convert — one already marked, one already on the chosen Account — and
+ * refusing the other 188 because of it would be a worse answer than converting
+ * them and saying what was left out. Nothing is hidden: every skip is returned
+ * with its reason for the caller to report.
+ */
+export function transfersFromEntries(
+  vault: Vault,
+  transactionIds: readonly Id[],
+  otherAccountId: Id,
+): BulkRecoveryOutcome {
+  // The whole batch shares one other Account, so a bad Account is a refusal of
+  // the batch and not a hundred identical skips.
+  if (!vault.accounts.some((a) => a.id === otherAccountId)) {
+    return { ok: false, message: "Conta inexistente." };
+  }
+  if (transactionIds.length === 0) {
+    return { ok: false, message: "Selecione pelo menos um lançamento." };
+  }
+
+  const transfers: Transaction[] = [];
+  const skipped: SkippedEntry[] = [];
+  // The same id twice is the caller's accident, not a second conversion.
+  for (const transactionId of new Set(transactionIds)) {
+    const outcome = transferFromEntry(vault, transactionId, otherAccountId);
+    if (outcome.ok) transfers.push(outcome.transaction);
+    else skipped.push({ transactionId, message: outcome.message });
+  }
+  return { ok: true, transfers, skipped };
+}

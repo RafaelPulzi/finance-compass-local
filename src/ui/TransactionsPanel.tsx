@@ -10,7 +10,7 @@ import {
 } from "../domain/transactionQuery";
 import type { Id, Transaction } from "../domain/types";
 import { useVault } from "../store/useVault";
-import { BulkClassifyBar } from "./BulkClassifyBar";
+import { BulkActionsBar, type SelectionTotals } from "./BulkActionsBar";
 import { CategoryOptions, type CategoryTree } from "./CategoryOptions";
 import { TransactionEditForm } from "./TransactionEditForm";
 import { TransactionFilters } from "./TransactionFilters";
@@ -36,6 +36,7 @@ export function TransactionsPanel() {
   const editTransaction = useVault((s) => s.editTransaction);
   const deleteTransaction = useVault((s) => s.deleteTransaction);
   const markTransactionAsTransfer = useVault((s) => s.markTransactionAsTransfer);
+  const markTransactionsAsTransfer = useVault((s) => s.markTransactionsAsTransfer);
   const revertTransferToEntry = useVault((s) => s.revertTransferToEntry);
 
   const [kind, setKind] = useState<Kind>("expense");
@@ -57,6 +58,12 @@ export function TransactionsPanel() {
   const [markingId, setMarkingId] = useState<Id | null>(null);
   /** A refusal that has no form of its own to show it, shown on its row. */
   const [rowError, setRowError] = useState<{ id: Id; message: string } | null>(null);
+  /**
+   * What the last bulk action did. It outlives the selection on purpose: the
+   * selection is cleared by the action, so a message living in the bar would
+   * disappear with the bar that reported it.
+   */
+  const [bulkNotice, setBulkNotice] = useState<string | null>(null);
 
   /**
    * A new filter is a new result set, so the page the user was on no longer
@@ -74,6 +81,7 @@ export function TransactionsPanel() {
     setDeletingId(null);
     setMarkingId(null);
     setRowError(null);
+    setBulkNotice(null);
   }
 
   /** Open one row's form, closing anything else that was open. */
@@ -165,8 +173,47 @@ export function TransactionsPanel() {
     return kind;
   }, [vault.transactions, selected]);
 
+  /**
+   * What marking the selection would move, split by direction: the Expenses
+   * arrive in the other Account and the Incomes leave it. Both sums are needed
+   * because a selection may hold either or both.
+   */
+  const selectedTotals = useMemo<SelectionTotals>(() => {
+    let outgoing = 0;
+    let incoming = 0;
+    for (const tx of vault.transactions) {
+      if (tx.kind === "transfer" || !selected.has(tx.id)) continue;
+      if (tx.kind === "expense") outgoing += tx.amount;
+      else incoming += tx.amount;
+    }
+    return { outgoing, incoming } as SelectionTotals;
+  }, [vault.transactions, selected]);
+
   function assignToSelected(categoryId: Id) {
     setTransactionCategoryMany([...selected], categoryId);
+    setSelected(new Set());
+    setBulkNotice(null);
+  }
+
+  function markSelectedAsTransfers(otherAccountId: Id) {
+    const result = markTransactionsAsTransfer([...selected], otherAccountId);
+    if (!result.ok) return setBulkNotice(result.message);
+
+    // Every skip is named, not just counted: a batch chosen by description can
+    // sweep in an entry that cannot convert, and a count alone would leave the
+    // user believing their whole selection moved.
+    const reasons = [...new Set(result.skipped.map((s) => s.message))];
+    const converted =
+      result.converted === 1
+        ? "1 lançamento virou transferência."
+        : `${result.converted} lançamentos viraram transferências.`;
+    setBulkNotice(
+      result.skipped.length === 0
+        ? converted
+        : `${converted} ${result.skipped.length} ignorado${
+            result.skipped.length === 1 ? "" : "s"
+          }: ${reasons.join(" ")}`,
+    );
     setSelected(new Set());
   }
 
@@ -331,13 +378,25 @@ export function TransactionsPanel() {
       )}
 
       {selected.size > 0 && selectedKind !== null && (
-        <BulkClassifyBar
+        <BulkActionsBar
           selectedCount={selected.size}
           kind={selectedKind}
           tree={selectedKind === "mixed" ? [] : treesByKind[selectedKind]}
+          accounts={vault.accounts}
+          totals={selectedTotals}
           onAssign={assignToSelected}
+          onMarkTransfers={markSelectedAsTransfers}
           onClear={() => setSelected(new Set())}
         />
+      )}
+
+      {bulkNotice !== null && (
+        <p
+          className="mb-3 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+          role="status"
+        >
+          {bulkNotice}
+        </p>
       )}
 
       <ul className="divide-y divide-slate-100 text-sm dark:divide-slate-700">

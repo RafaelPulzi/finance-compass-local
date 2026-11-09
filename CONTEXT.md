@@ -67,7 +67,7 @@ The imported entries a Transfer was built out of, each remembered as the bank's 
 _Avoid_: Sources (a Transfer's *source* is its origin Account), origins
 
 **Marking**:
-Naming, by hand, the Account on the other side of a single imported entry, which turns that entry into a Transfer. Needed when only one leg was ever imported — money moving to somewhere no Statement covers — so no candidate pair can exist. The entry is *replaced*, not kept alongside the Transfer, and its direction comes from its own sign rather than from the user. Marking is the one conversion that moves a balance: the chosen Account was not tracking that money before.
+Naming, by hand, the Account on the other side of one or more imported entries, which turns each of them into a Transfer. A whole selection can be marked against the same other Account at once — a real Statement holds hundreds of the same internal move, and the same judgement repeated is still one judgement. Each entry is decided on its own, so a selection mixing Expenses and Incomes is fine; an entry that cannot convert is skipped and reported rather than failing the rest. Needed when only one leg was ever imported — money moving to somewhere no Statement covers — so no candidate pair can exist. The entry is *replaced*, not kept alongside the Transfer, and its direction comes from its own sign rather than from the user. Marking is the one conversion that moves a balance: the chosen Account was not tracking that money before.
 _Avoid_: Linking, assigning, converting to transfer
 
 **Undoing a marking**:

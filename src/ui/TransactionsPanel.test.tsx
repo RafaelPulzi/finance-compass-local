@@ -1027,3 +1027,123 @@ describe("marking a whole selection as Transfers", () => {
     expect(screen.getByText(/Só existe uma conta no cofre/)).toBeInTheDocument();
   });
 });
+
+describe("being offered a Rule after classifying by hand", () => {
+  const vault: Vault = {
+    ...base,
+    transactions: [
+      expense("e1", "2026-10-02", 3000, "UBER TRIP 8213", null),
+      expense("e2", "2026-10-03", 4000, "UBER TRIP 9120", null),
+      expense("e3", "2026-10-04", 1000, "PADARIA DO ZE", null),
+    ],
+  };
+
+  const rulesOf = () => useVault.getState().vault.rules;
+
+  /** Select two rows and classify them, which is what prompts the offer. */
+  async function classifyBothUbers(from: Vault = vault) {
+    show(from);
+    const user = userEvent.setup();
+    await user.click(screen.getByLabelText("Selecionar UBER TRIP 8213"));
+    await user.click(screen.getByLabelText("Selecionar UBER TRIP 9120"));
+    await user.selectOptions(
+      screen.getByLabelText("Categoria para as selecionadas"),
+      "cat-market",
+    );
+    return user;
+  }
+
+  it("prefills the words the classified descriptions share", async () => {
+    await classifyBothUbers();
+
+    expect(screen.getByLabelText("Padrão da regra sugerida")).toHaveValue("uber trip");
+  });
+
+  it("creates the Rule, with whatever the user edited the pattern down to", async () => {
+    const user = await classifyBothUbers();
+
+    const input = screen.getByLabelText("Padrão da regra sugerida");
+    await user.clear(input);
+    await user.type(input, "uber");
+    await user.click(screen.getByRole("button", { name: "Criar regra" }));
+
+    expect(rulesOf()).toMatchObject([
+      { pattern: "uber", categoryId: "cat-market", kind: "expense" },
+    ]);
+    expect(screen.getByRole("status").textContent).toContain("Regra criada");
+  });
+
+  it("creates nothing when the offer is declined", async () => {
+    const user = await classifyBothUbers();
+
+    await user.click(screen.getByRole("button", { name: "não, obrigado" }));
+
+    expect(rulesOf()).toEqual([]);
+    expect(screen.queryByLabelText("Padrão da regra sugerida")).not.toBeInTheDocument();
+  });
+
+  it("offers nothing when the descriptions have no words in common", async () => {
+    show(vault);
+    const user = userEvent.setup();
+    await user.click(screen.getByLabelText("Selecionar UBER TRIP 8213"));
+    await user.click(screen.getByLabelText("Selecionar PADARIA DO ZE"));
+
+    await user.selectOptions(
+      screen.getByLabelText("Categoria para as selecionadas"),
+      "cat-market",
+    );
+
+    expect(screen.queryByLabelText("Padrão da regra sugerida")).not.toBeInTheDocument();
+  });
+
+  it("offers nothing when a Rule already says this", async () => {
+    await classifyBothUbers({
+      ...vault,
+      rules: [
+        { id: "r-1", pattern: "UBER TRIP", categoryId: "cat-market", kind: "expense" },
+      ],
+    });
+
+    expect(screen.queryByLabelText("Padrão da regra sugerida")).not.toBeInTheDocument();
+  });
+});
+
+describe("seeing which Rule classified a Transaction", () => {
+  it("names the Rule on the row", () => {
+    show({
+      ...base,
+      rules: [{ id: "r-1", pattern: "ifood", categoryId: "cat-market", kind: "expense" }],
+      transactions: [
+        {
+          ...expense("e1", "2026-10-02", 5000, "IFOOD PEDIDO", "cat-market"),
+          ruleId: "r-1",
+        } as Transaction,
+      ],
+    });
+
+    expect(listText()).toContain("regra “ifood”");
+  });
+
+  it("says so plainly when the Rule has since been deleted", () => {
+    show({
+      ...base,
+      transactions: [
+        {
+          ...expense("e1", "2026-10-02", 5000, "IFOOD PEDIDO", "cat-market"),
+          ruleId: "r-gone",
+        } as Transaction,
+      ],
+    });
+
+    expect(listText()).toContain("por uma regra já excluída");
+  });
+
+  it("says nothing about Rules for a Category the user chose", () => {
+    show({
+      ...base,
+      transactions: [expense("e1", "2026-10-02", 5000, "IFOOD PEDIDO", "cat-market")],
+    });
+
+    expect(listText()).not.toContain("regra");
+  });
+});

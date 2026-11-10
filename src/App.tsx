@@ -16,6 +16,7 @@ import { BudgetsPanel } from "./ui/BudgetsPanel";
 import { CategoriesPanel } from "./ui/CategoriesPanel";
 import { DashboardPage } from "./ui/DashboardPage";
 import { ImportPanel } from "./ui/ImportPanel";
+import { RulesPanel } from "./ui/RulesPanel";
 import { TransactionsPanel } from "./ui/TransactionsPanel";
 import { VaultPanel } from "./ui/VaultPanel";
 import { monthLongLabel } from "./ui/charts/format";
@@ -26,6 +27,7 @@ const NAV = [
   { to: "/transacoes", label: "Transações" },
   { to: "/contas", label: "Contas" },
   { to: "/categorias", label: "Categorias" },
+  { to: "/regras", label: "Regras" },
   { to: "/orcamentos", label: "Orçamentos" },
   { to: "/cofre", label: "Cofre" },
 ];
@@ -181,6 +183,7 @@ function Shell() {
             }
           />
           <Route path="/categorias" element={<CategoriesPanel />} />
+          <Route path="/regras" element={<RulesPanel />} />
           <Route path="/orcamentos" element={<BudgetsPanel month={month} />} />
           <Route
             path="/cofre"

@@ -1,5 +1,6 @@
 import { type FormEvent, useMemo, useState } from "react";
-import { categoryTree, treeHas } from "../domain/categories";
+import { categoryKind, categoryTree, treeHas } from "../domain/categories";
+import { normalizedPattern, suggestedPattern } from "../domain/classificationRules";
 import { formatDateBR } from "../domain/dates";
 import { formatBRL, parseBRL } from "../domain/money";
 import {
@@ -11,6 +12,7 @@ import {
 import type { Id, Transaction } from "../domain/types";
 import { useVault } from "../store/useVault";
 import { BulkActionsBar, type SelectionTotals } from "./BulkActionsBar";
+import { RuleOfferForm } from "./RuleOfferForm";
 import { CategoryOptions, type CategoryTree } from "./CategoryOptions";
 import { TransactionEditForm } from "./TransactionEditForm";
 import { TransactionFilters } from "./TransactionFilters";
@@ -37,6 +39,7 @@ export function TransactionsPanel() {
   const deleteTransaction = useVault((s) => s.deleteTransaction);
   const markTransactionAsTransfer = useVault((s) => s.markTransactionAsTransfer);
   const markTransactionsAsTransfer = useVault((s) => s.markTransactionsAsTransfer);
+  const addRule = useVault((s) => s.addRule);
   const revertTransferToEntry = useVault((s) => s.revertTransferToEntry);
 
   const [kind, setKind] = useState<Kind>("expense");
@@ -64,6 +67,10 @@ export function TransactionsPanel() {
    * disappear with the bar that reported it.
    */
   const [bulkNotice, setBulkNotice] = useState<string | null>(null);
+  /** A Rule the app is offering to remember, from classification just done by hand. */
+  const [ruleOffer, setRuleOffer] = useState<{ pattern: string; categoryId: Id } | null>(
+    null,
+  );
 
   /**
    * A new filter is a new result set, so the page the user was on no longer
@@ -82,6 +89,7 @@ export function TransactionsPanel() {
     setMarkingId(null);
     setRowError(null);
     setBulkNotice(null);
+    setRuleOffer(null);
   }
 
   /** Open one row's form, closing anything else that was open. */
@@ -119,6 +127,10 @@ export function TransactionsPanel() {
   const categoryName = useMemo(
     () => new Map(vault.categories.map((c) => [c.id, c.name])),
     [vault.categories],
+  );
+  const rulePattern = useMemo(
+    () => new Map(vault.rules.map((r) => [r.id, r.pattern])),
+    [vault.rules],
   );
 
   /** Categories split by the kind of transaction they can classify, under their Groups. */
@@ -190,9 +202,44 @@ export function TransactionsPanel() {
   }, [vault.transactions, selected]);
 
   function assignToSelected(categoryId: Id) {
+    // Read the descriptions before the selection is cleared: they are what the
+    // offered Rule is guessed from.
+    const descriptions = vault.transactions
+      .filter((tx) => tx.kind !== "transfer" && selected.has(tx.id))
+      .map((tx) => tx.description);
+
     setTransactionCategoryMany([...selected], categoryId);
     setSelected(new Set());
     setBulkNotice(null);
+    setRuleOffer(offerFor(descriptions, categoryId));
+  }
+
+  /**
+   * The Rule worth offering for work just done by hand, or null when there is
+   * none: no shared pattern to guess from, or a Rule that already says this.
+   */
+  function offerFor(descriptions: readonly string[], categoryId: Id) {
+    const suggested = suggestedPattern(descriptions);
+    if (suggested === null) return null;
+    const kind = categoryKind(vault, categoryId);
+    if (kind === undefined) return null;
+    const known = vault.rules.some(
+      (rule) => rule.kind === kind && normalizedPattern(rule.pattern) === suggested,
+    );
+    return known ? null : { pattern: suggested, categoryId };
+  }
+
+  function acceptRuleOffer(pattern: string) {
+    if (ruleOffer === null) return;
+    const outcome = addRule({ pattern, categoryId: ruleOffer.categoryId });
+    setRuleOffer(null);
+    setBulkNotice(
+      outcome.ok
+        ? `Regra criada: descrições com “${pattern}” vão para ${
+            categoryName.get(ruleOffer.categoryId) ?? "essa categoria"
+          }. Aplique-a ao resto na página Regras.`
+        : outcome.message,
+    );
   }
 
   function markSelectedAsTransfers(otherAccountId: Id) {
@@ -390,6 +437,15 @@ export function TransactionsPanel() {
         />
       )}
 
+      {ruleOffer !== null && (
+        <RuleOfferForm
+          suggested={ruleOffer.pattern}
+          categoryName={categoryName.get(ruleOffer.categoryId) ?? "essa categoria"}
+          onAccept={acceptRuleOffer}
+          onDecline={() => setRuleOffer(null)}
+        />
+      )}
+
       {bulkNotice !== null && (
         <p
           className="mb-3 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
@@ -505,6 +561,13 @@ export function TransactionsPanel() {
                   <>
                     {formatDateBR(tx.date)} · {categoryName.get(tx.categoryId) ?? "?"} ·{" "}
                     {accountName.get(tx.accountId) ?? "?"}
+                    {/* Which Rule did this, so a surprising Category is traceable
+                        to the thing that caused it. A Rule since deleted leaves
+                        the Category alone, and says so rather than nothing. */}
+                    {tx.ruleId !== undefined &&
+                      (rulePattern.has(tx.ruleId)
+                        ? ` · regra “${rulePattern.get(tx.ruleId)}”`
+                        : " · por uma regra já excluída")}
                   </>
                 )}
               </div>

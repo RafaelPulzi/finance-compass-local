@@ -31,7 +31,11 @@ export function ImportPanel() {
   const [statement, setStatement] = useState<ParsedStatement | null>(null);
   const [fileName, setFileName] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [result, setResult] = useState<{ added: number; skipped: number } | null>(null);
+  const [result, setResult] = useState<{
+    added: number;
+    skipped: number;
+    classified: number;
+  } | null>(null);
 
   const plan = useMemo(() => {
     if (statement === null || accountId === "") return null;
@@ -57,8 +61,12 @@ export function ImportPanel() {
 
   function confirm() {
     if (plan === null) return;
-    commitImport({ plan, fileName });
-    setResult({ added: plan.additions.length, skipped: plan.duplicates.length });
+    const report = commitImport({ plan, fileName });
+    setResult({
+      added: report.added,
+      skipped: plan.duplicates.length,
+      classified: report.classified,
+    });
     setStatement(null);
     setFileName("");
   }
@@ -124,8 +132,21 @@ export function ImportPanel() {
       {result && (
         <p className="mt-3 rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">
           Importado: {result.added} {result.added === 1 ? "lançamento" : "lançamentos"}
-          {result.skipped > 0 && `, ${result.skipped} já existia(m)`}. As transações
-          importadas ficam <strong>sem categoria</strong> até você classificá-las.
+          {result.skipped > 0 && `, ${result.skipped} já existia(m)`}.{" "}
+          {/* What is left to do is the useful half of this message: a month whose
+              merchants are all known needs no classification at all. */}
+          {result.classified > 0 ? (
+            <>
+              Suas regras classificaram <strong>{result.classified}</strong>; os
+              outros {result.added - result.classified} ficam{" "}
+              <strong>sem categoria</strong> até você classificá-los.
+            </>
+          ) : (
+            <>
+              As transações importadas ficam <strong>sem categoria</strong> até você
+              classificá-las.
+            </>
+          )}
         </p>
       )}
 

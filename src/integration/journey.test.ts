@@ -19,6 +19,7 @@ const ENTITIES = [
   "accounts",
   "groups",
   "categories",
+  "rules",
   "transactions",
   "budgets",
   "imports",
@@ -31,7 +32,7 @@ function repo() {
     dir: "/cofre",
     async load(): Promise<Vault | null> {
       if (!disk.has("meta")) return null;
-      const meta = JSON.parse(disk.get("meta") as string) as { schemaVersion: 3 };
+      const meta = JSON.parse(disk.get("meta") as string) as { schemaVersion: 4 };
       const vault = { schemaVersion: meta.schemaVersion } as Vault;
       for (const key of ENTITIES) {
         (vault as unknown as Record<string, unknown>)[key] = JSON.parse(disk.get(key) ?? "[]");

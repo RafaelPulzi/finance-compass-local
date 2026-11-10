@@ -7,6 +7,7 @@ import type {
   DismissedTransferPair,
   Group,
   ImportRecord,
+  Rule,
   Transaction,
   Vault,
 } from "../domain/types";
@@ -35,6 +36,7 @@ const NAMES = {
   accounts: "accounts.json",
   groups: "groups.json",
   categories: "categories.json",
+  rules: "rules.json",
   transactions: "transactions.json",
   budgets: "budgets.json",
   imports: "imports.json",
@@ -120,6 +122,8 @@ export function createTauriRepository(
         accounts: await readJson<Account[]>(p.accounts, []),
         groups: await readJson<Group[]>(p.groups, []),
         categories: await readJson<Category[]>(p.categories, []),
+        // Absent in a v3 vault, which had no Rules at all.
+        rules: await readJson<Rule[]>(p.rules, []),
         transactions: await readJson<Transaction[]>(p.transactions, []),
         budgets: await readJson<Budget[]>(p.budgets, []),
         imports: await readJson<ImportRecord[]>(p.imports, []),
@@ -137,6 +141,7 @@ export function createTauriRepository(
       await writeJson(p.accounts, vault.accounts);
       await writeJson(p.groups, vault.groups);
       await writeJson(p.categories, vault.categories);
+      await writeJson(p.rules, vault.rules);
       await writeJson(p.transactions, vault.transactions);
       await writeJson(p.budgets, vault.budgets);
       await writeJson(p.imports, vault.imports);

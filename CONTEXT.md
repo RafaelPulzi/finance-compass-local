@@ -37,6 +37,10 @@ The state of an Income or Expense Transaction that has no Category yet. Every im
 A named collection of Categories (e.g. "Food" containing "Groceries" and "Restaurants"). Categories are organised two levels deep: Group → Category, no deeper.
 _Avoid_: Parent category, folder
 
+**Rule**:
+A user-authored mapping from a description pattern to a Category, applied only to Uncategorized Transactions — at Import, and on demand over the ones already there. The pattern is plain text the description must contain, compared with case and accents ignored, never a regular expression. Rules are tried in the user's own order and the first match decides. A Rule never changes a Category the user set by hand (ADR-0008), and a Transaction remembers which Rule classified it.
+_Avoid_: Filter (the Transactions page's own concept), auto-category, classifier
+
 **Budget**:
 A monthly spending limit set for a single expense Category (e.g. Groceries = R$800/month). The app compares the calendar month's actual Expenses in that Category against the limit. Unspent amounts do not roll over to the next month.
 _Avoid_: Allowance, cap, envelope

@@ -2,6 +2,8 @@ import { create } from "zustand";
 import * as accountRules from "../domain/accounts";
 import type { AccountInput } from "../domain/accounts";
 import * as categoryRules from "../domain/categories";
+import * as classification from "../domain/classificationRules";
+import type { RuleInput } from "../domain/classificationRules";
 import { categoryKind } from "../domain/categories";
 import { newId } from "../domain/id";
 import type { Centavos } from "../domain/money";
@@ -23,6 +25,7 @@ import type {
   ISODate,
   Id,
   ImportRecord,
+  Rule,
   Vault,
 } from "../domain/types";
 import { emptyVault } from "../domain/types";
@@ -108,6 +111,24 @@ interface VaultState {
   /** Refused while the Group still has Categories. */
   deleteGroup: (groupId: Id) => ActionResult;
 
+  /** Add a classification Rule at the end of the order, where it decides last. */
+  addRule: (input: RuleInput) => { ok: true; rule: Rule } | Refusal;
+  /** Change a Rule's pattern or Category, keeping its place in the order. */
+  editRule: (ruleId: Id, input: RuleInput) => ActionResult;
+  /** Remove a Rule, leaving the Transactions it classified exactly as they are. */
+  deleteRule: (ruleId: Id) => ActionResult;
+  /** Move a Rule one place up (-1) or down (1): the order *is* the priority. */
+  moveRule: (ruleId: Id, offset: -1 | 1) => ActionResult;
+  /**
+   * Run the Rules over the Transactions that have no Category yet, so writing a
+   * Rule clears the backlog instead of only helping the next Import.
+   *
+   * One mutation and therefore one save, however many Transactions change — the
+   * same invariant bulk classification and bulk marking rest on. Nothing is
+   * written when no Rule matches anything.
+   */
+  applyRulesToUncategorized: () => { applied: number };
+
   addIncome: (input: {
     date: ISODate;
     amount: Centavos;
@@ -130,8 +151,18 @@ interface VaultState {
     description: string;
   }) => ActionResult;
   setBudget: (input: { categoryId: Id; monthlyLimit: Centavos }) => ActionResult;
-  /** Apply a planned Statement import, adding its new Transactions and recording the Import. */
-  commitImport: (input: { plan: ImportPlan; fileName: string }) => void;
+  /**
+   * Apply a planned Statement import, adding its new Transactions and recording
+   * the Import. The Rules run over the additions in the same mutation, so a
+   * routine month can arrive already classified.
+   *
+   * Reports what the Import did so the panel can say whether there is work
+   * left: how many entries were added, and how many of them a Rule classified.
+   */
+  commitImport: (input: { plan: ImportPlan; fileName: string }) => {
+    added: number;
+    classified: number;
+  };
   /**
    * Assign a Category to a Transaction, e.g. one that arrived uncategorized from
    * an import. A Category of the other kind is ignored: an Income never sits in
@@ -436,6 +467,38 @@ export const useVault = create<VaultState>((set, get) => {
       return apply(categoryRules.deleteGroup(get().vault, groupId));
     },
 
+    addRule(input) {
+      const outcome = classification.addRule(get().vault, input, newId);
+      if (!outcome.ok) return outcome;
+      mutate(outcome.vault);
+      return { ok: true, rule: outcome.rule };
+    },
+
+    editRule(ruleId, input) {
+      return apply(classification.editRule(get().vault, ruleId, input));
+    },
+
+    deleteRule(ruleId) {
+      return apply(classification.deleteRule(get().vault, ruleId));
+    },
+
+    moveRule(ruleId, offset) {
+      return apply(classification.moveRule(get().vault, ruleId, offset));
+    },
+
+    applyRulesToUncategorized() {
+      const vault = get().vault;
+      const { transactions, assignments } = classification.applyRules(
+        vault.rules,
+        vault.transactions,
+      );
+      // Nothing matched, so there is nothing to write — and an empty save would
+      // still rewrite every file in the vault.
+      if (assignments.length === 0) return { applied: 0 };
+      mutate({ ...vault, transactions: [...transactions] });
+      return { applied: assignments.length };
+    },
+
     addIncome(input) {
       return addTx({ kind: "income", ...input });
     },
@@ -472,6 +535,15 @@ export const useVault = create<VaultState>((set, get) => {
     commitImport({ plan, fileName }) {
       const vault = get().vault;
       const added = toTransactions(plan.additions, plan.accountId, newId);
+      // The Rules run here rather than inside the import domain: `toTransactions`
+      // keeps producing Uncategorized entries and stays separately testable, and
+      // an Import in a vault with no Rules behaves exactly as it did before.
+      // Only the additions are offered to the Rules — what was already in the
+      // vault is the backlog action's business, not this one's.
+      const { transactions: classified, assignments } = classification.applyRules(
+        vault.rules,
+        added,
+      );
       const record: ImportRecord = {
         id: newId(),
         accountId: plan.accountId,
@@ -482,9 +554,10 @@ export const useVault = create<VaultState>((set, get) => {
       };
       mutate({
         ...vault,
-        transactions: [...vault.transactions, ...added],
+        transactions: [...vault.transactions, ...classified],
         imports: [...vault.imports, record],
       });
+      return { added: added.length, classified: assignments.length };
     },
 
     setTransactionCategory(transactionId, categoryId) {
@@ -505,7 +578,11 @@ export const useVault = create<VaultState>((set, get) => {
         // for — and an Income never lands in an expense Category, or vice versa.
         if (!wanted.has(tx.id) || tx.kind !== kind || tx.categoryId === categoryId) return tx;
         changed = true;
-        return { ...tx, categoryId };
+        // Classifying by hand is the user speaking for themselves, so whatever
+        // Rule had decided this Category stops being the explanation for it.
+        const next = { ...tx, categoryId };
+        delete next.ruleId;
+        return next;
       });
       if (changed) mutate({ ...vault, transactions });
     },

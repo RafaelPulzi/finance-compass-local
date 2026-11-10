@@ -151,6 +151,13 @@ export function editedTransaction(
       accountId,
       categoryId,
       ...(current.fitid === undefined ? {} : { fitid: current.fitid }),
+      // Provenance survives an edit that leaves the Category where it was — a
+      // corrected date or description does not mean the user chose the
+      // Category. Any change to the Category is their own decision, so the
+      // Rule stops being what explains it.
+      ...(current.ruleId !== undefined && categoryId === current.categoryId
+        ? { ruleId: current.ruleId }
+        : {}),
     },
   };
 }

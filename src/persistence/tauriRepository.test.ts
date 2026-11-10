@@ -62,10 +62,11 @@ const DIR = "/d/Financas/Cofre";
 
 function vaultWith(partial: Partial<Vault> = {}): Vault {
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     accounts: [],
     groups: [],
     categories: [],
+    rules: [],
     transactions: [],
     budgets: [],
     imports: [],
@@ -94,6 +95,7 @@ describe("createTauriRepository", () => {
       `${DIR}/groups.json`,
       `${DIR}/imports.json`,
       `${DIR}/meta.json`,
+      `${DIR}/rules.json`,
       `${DIR}/transactions.json`,
     ]);
   });
@@ -182,7 +184,7 @@ describe("createTauriRepository", () => {
     );
 
     const loaded = await createTauriRepository(DIR).load();
-    expect(loaded?.schemaVersion).toBe(3);
+    expect(loaded?.schemaVersion).toBe(4);
     expect(loaded?.transactions[0]).not.toHaveProperty("recoveredFrom");
     // v2 had no dismissed-transfers file at all.
     expect(loaded?.dismissedTransferPairs).toEqual([]);
@@ -267,7 +269,7 @@ describe("surviving an interrupted save", () => {
     await createTauriRepository(DIR).save(before);
 
     const writes = fs.log.filter((op) => op.startsWith("write "));
-    expect(writes.length).toBe(8);
+    expect(writes.length).toBe(9);
     expect(writes.every((op) => op.endsWith(".tmp"))).toBe(true);
     for (const write of writes) {
       const temp = write.slice("write ".length);
@@ -343,5 +345,65 @@ describe("surviving an interrupted save", () => {
     fs.files.set(`${DIR}/accounts.json`, "{}");
 
     await expect(createTauriRepository(DIR).load()).rejects.toThrow(/accounts.*lista/);
+  });
+});
+
+describe("a vault written before Rules existed", () => {
+  it("reads a v3 vault as v4 with no Rules", async () => {
+    fs.dirs.add(DIR);
+    fs.files.set(`${DIR}/meta.json`, JSON.stringify({ schemaVersion: 3 }));
+    fs.files.set(
+      `${DIR}/transactions.json`,
+      JSON.stringify([
+        {
+          id: "t1",
+          kind: "expense",
+          date: "2026-10-02",
+          amount: 5000,
+          description: "PADARIA",
+          accountId: "acc-1",
+          categoryId: "cat-1",
+        },
+      ]),
+    );
+
+    const loaded = await createTauriRepository(DIR).load();
+
+    expect(loaded?.schemaVersion).toBe(4);
+    expect(loaded?.rules).toEqual([]);
+    // Every Category in a v3 vault was assigned by hand, which is what a
+    // missing ruleId already says.
+    expect(loaded?.transactions[0]).not.toHaveProperty("ruleId");
+  });
+
+  it("round-trips Rules as readable JSON in their own file", async () => {
+    const vault = vaultWith({
+      rules: [
+        { id: "r-1", pattern: "IFOOD", categoryId: "cat-rest", kind: "expense" },
+        { id: "r-2", pattern: "SALARIO", categoryId: "cat-sal", kind: "income" },
+      ],
+    });
+
+    await createTauriRepository(DIR).save(vault);
+
+    const written = fs.files.get(`${DIR}/rules.json`) ?? "";
+    expect(written).toContain('"pattern": "IFOOD"');
+    expect((await createTauriRepository(DIR).load())?.rules).toEqual(vault.rules);
+  });
+
+  it("keeps the order Rules were saved in, since the order is the priority", async () => {
+    const vault = vaultWith({
+      rules: [
+        { id: "r-specific", pattern: "ifood", categoryId: "cat-rest", kind: "expense" },
+        { id: "r-general", pattern: "food", categoryId: "cat-market", kind: "expense" },
+      ],
+    });
+
+    await createTauriRepository(DIR).save(vault);
+
+    expect((await createTauriRepository(DIR).load())?.rules.map((r) => r.id)).toEqual([
+      "r-specific",
+      "r-general",
+    ]);
   });
 });

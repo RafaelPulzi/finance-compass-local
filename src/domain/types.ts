@@ -66,6 +66,14 @@ interface SingleAccountTransaction extends TransactionBase {
   accountId: Id;
   categoryId: Id | null;
   fitid?: string;
+  /**
+   * The Rule that assigned this Category, absent when the user assigned it
+   * themselves. Informational: it is what lets the app answer "why is this a
+   * Restaurante?", and it is why deleting a Rule can safely leave the
+   * Transactions it classified alone — a reference to a Rule that no longer
+   * exists reads as exactly that.
+   */
+  ruleId?: Id;
 }
 
 /** Money coming into one Account, classified by an income Category. */
@@ -112,6 +120,30 @@ export type Transaction =
   | IncomeTransaction
   | ExpenseTransaction
   | TransferTransaction;
+
+// --- Rules ----------------------------------------------------------------
+
+/**
+ * A user-authored mapping from a description pattern to a Category, applied
+ * only to Uncategorized Transactions.
+ *
+ * The pattern is a plain substring matched against a normalised description
+ * (lowercased, accents stripped), never a regular expression — see ADR-0008.
+ *
+ * A Rule's position in `Vault.rules` *is* its priority: the first Rule that
+ * matches decides and the rest are skipped. Order is the array's order rather
+ * than a stored number, so reordering cannot leave two Rules claiming the same
+ * position or a gap where one was deleted.
+ */
+export interface Rule {
+  id: Id;
+  /** What the description must contain. Stored as the user typed it. */
+  pattern: string;
+  /** The Category this Rule assigns. Always of the Rule's own kind. */
+  categoryId: Id;
+  /** Whether it classifies Incomes or Expenses; never both, as Categories are separate. */
+  kind: CategoryKind;
+}
 
 // --- Budgets --------------------------------------------------------------
 
@@ -162,8 +194,10 @@ export interface DismissedTransferPair {
  * and a nullable `categoryId` so imported entries can start uncategorized.
  * v3 lets a Transfer record the imported entries it was recovered from, and
  * remembers candidate pairs the user dismissed (see docs/adr/0006).
+ * v4 adds classification Rules, and the Rule that classified a Transaction
+ * (see docs/adr/0008).
  */
-export const VAULT_SCHEMA_VERSION = 3 as const;
+export const VAULT_SCHEMA_VERSION = 4 as const;
 
 /** The whole in-memory model, mirrored to the JSON files in the vault folder. */
 export interface Vault {
@@ -171,6 +205,8 @@ export interface Vault {
   accounts: Account[];
   groups: Group[];
   categories: Category[];
+  /** Classification Rules, in the order they are tried: first match wins. */
+  rules: Rule[];
   transactions: Transaction[];
   budgets: Budget[];
   imports: ImportRecord[];
@@ -183,6 +219,7 @@ export function emptyVault(): Vault {
     accounts: [],
     groups: [],
     categories: [],
+    rules: [],
     transactions: [],
     budgets: [],
     imports: [],

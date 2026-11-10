@@ -248,3 +248,65 @@ describe("editedTransaction: dates and recovered Transfers", () => {
     expect(outcome.ok).toBe(true);
   });
 });
+
+describe("the Rule that classified a Transaction, across an edit", () => {
+  /** One Transaction a Rule classified, and a second expense Category to move it to. */
+  const withClassified = (): Vault => ({
+    ...vault,
+    categories: [
+      ...vault.categories,
+      { id: "cat-rest", name: "Restaurantes", groupId: "g-food" },
+    ],
+    transactions: [
+      {
+        id: "r1",
+        kind: "expense",
+        date: "2026-10-02",
+        amount: centavos(5000),
+        description: "IFOOD PEDIDO",
+        accountId: ACC,
+        categoryId: "cat-market",
+        ruleId: "rule-1",
+      },
+    ],
+  });
+
+  it("survives an edit that leaves the Category where it was", () => {
+    const outcome = editedTransaction(withClassified(), "r1", {
+      date: "2026-10-03",
+      description: "IFOOD PEDIDO 22",
+    });
+
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.transaction).toMatchObject({ ruleId: "rule-1" });
+  });
+
+  it("is dropped when the user chooses a different Category", () => {
+    const outcome = editedTransaction(withClassified(), "r1", {
+      categoryId: "cat-rest",
+    });
+
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.transaction).toMatchObject({ categoryId: "cat-rest" });
+    expect(outcome.transaction).not.toHaveProperty("ruleId");
+  });
+
+  it("is dropped when the Category is cleared", () => {
+    const outcome = editedTransaction(withClassified(), "r1", { categoryId: null });
+
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.transaction).not.toHaveProperty("ruleId");
+  });
+
+  it("is dropped when a kind flip drops the Category with it", () => {
+    const outcome = editedTransaction(withClassified(), "r1", { kind: "income" });
+
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.transaction).toMatchObject({ kind: "income", categoryId: null });
+    expect(outcome.transaction).not.toHaveProperty("ruleId");
+  });
+});

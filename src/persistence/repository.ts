@@ -36,6 +36,9 @@ export interface VaultFolderPick {
  * v2 -> v3: a Transfer's `recoveredFrom` is absent, which is exactly right — a v2
  * Transfer was entered by hand and came from no Statement — and there are no
  * dismissed candidate pairs yet.
+ * v3 -> v4: there are no Rules, so no Transaction was classified by one; every
+ * Category in a v3 vault was assigned by hand, which is what a missing `ruleId`
+ * already says.
  * A vault written by a *newer* app version is refused rather than silently
  * half-read, so an unknown field can't be dropped on the next save.
  */
@@ -55,6 +58,8 @@ export function parseVault(raw: unknown): Vault {
     accounts: listOf(stored.accounts, "accounts"),
     groups: listOf(stored.groups, "groups"),
     categories: listOf(stored.categories, "categories"),
+    // Absent in a v3 vault, which had no Rules at all.
+    rules: listOf(stored.rules, "rules"),
     transactions: listOf(stored.transactions, "transactions"),
     budgets: listOf(stored.budgets, "budgets"),
     imports: listOf(stored.imports, "imports"),

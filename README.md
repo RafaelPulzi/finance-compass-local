@@ -11,7 +11,8 @@ Organizador de finanças pessoais **local-first** para desktop. Você importa os
 | **Contas** | Conta corrente, poupança, dinheiro e cartão de crédito. Editar nome, tipo e saldo inicial; excluir uma conta sem lançamentos. O saldo atual é sempre *calculado* (saldo inicial + transações), nunca digitado. |
 | **Importação OFX** | Importa o extrato exportado pelo banco. Lançamentos já importados são ignorados automaticamente (pelo identificador do banco), então reimportar um período sobreposto não duplica nada. Lida com bancos que declaram a codificação errada (ex.: Banco Inter) e avisa sobre lançamentos ilegíveis em vez de descartá-los em silêncio. |
 | **Transações** | Lista completa com filtros (conta, mês, tipo, categoria, "sem categoria") e busca que ignora acentos e maiúsculas. Classificação em massa ("selecionar todas do filtro → classificar como…"), edição e exclusão. |
-| **Transferências** | Marcar um lançamento importado (ex.: `APLICACAO CDB`) como transferência para outra conta sua, para que dinheiro guardado não conte como gasto — e desfazer, se errar. |
+| **Transferências** | Marcar um lançamento importado (ex.: `APLICACAO CDB`) como transferência para outra conta sua, para que dinheiro guardado não conte como gasto — e desfazer, se errar. Dá para marcar uma seleção inteira de uma vez contra a mesma conta, dizendo antes quanto vai mexer em qual saldo. |
+| **Regras** | Página própria: "descrição contém `IFOOD` → Restaurantes", testadas na ordem que você define, aplicadas na importação e, sob confirmação, ao que já está sem categoria. Nunca mudam uma categoria que você escolheu. Depois de classificar à mão, o app oferece guardar aquilo como regra. |
 | **Categorias** | Página própria para criar, renomear e mover categorias entre grupos. Excluir só é permitido quando nada mais usa a categoria. Cofres novos já vêm com 43 categorias brasileiras em 14 grupos. |
 | **Orçamentos** | Limite mensal por categoria de despesa, com medidor de "no limite / perto / acima". |
 | **Painel** | Receitas, despesas e saldo do mês; gastos por categoria; receitas × despesas dos últimos 6 meses. Todo gráfico tem uma visão em tabela. |
@@ -32,9 +33,10 @@ Ainda não há um instalador publicado para download. Para gerar o seu, siga [Ro
 1. **Contas → Adicionar conta.** Dê um nome (ex.: "Banco Inter"), o tipo e o saldo que a conta tinha *antes* do primeiro lançamento que você vai importar.
 2. **Exporte o extrato OFX** no app ou site do seu banco (geralmente em "Extrato → Exportar → OFX/Money").
 3. **Contas → Importar extrato (OFX).** Escolha o arquivo. O app mostra quantos lançamentos são novos e quantos já existiam antes de você confirmar.
-4. **Transações → classificar.** Os importados chegam *sem categoria*. Filtre por "Sem categoria", busque um estabelecimento (ex.: `uber`), marque "Selecionar todas" e escolha a categoria de uma vez.
-5. **Aplicações e resgates.** Se o banco lança dinheiro indo e voltando de investimento como gasto e receita, crie uma conta para o investimento (ex.: "Inter CDB", tipo Poupança) e use **transferência** na linha do lançamento. Isso tira esse dinheiro das despesas e o mostra na conta certa.
-6. **Orçamentos** para pôr limites por categoria, e **Painel** para acompanhar o mês.
+4. **Transações → classificar.** Os importados chegam *sem categoria*. Filtre por "Sem categoria", busque um estabelecimento (ex.: `uber`), marque "Selecionar todas" e escolha a categoria de uma vez. Depois disso o app oferece guardar aquilo como uma **regra** — aceite, e no mês que vem esses lançamentos já chegam classificados.
+5. **Aplicações e resgates.** Se o banco lança dinheiro indo e voltando de investimento como gasto e receita, crie uma conta para o investimento (ex.: "Inter CDB", tipo Poupança) e use **transferência** na linha do lançamento. Isso tira esse dinheiro das despesas e o mostra na conta certa. Quando são centenas de lançamentos iguais, busque o texto que eles têm em comum (ex.: `aplicacao`), marque "Selecionar todas" e use a marcação em lote na barra verde: o app diz quanto vai mexer em qual saldo antes de você confirmar.
+6. **Regras.** Uma regra classifica sozinha o que a descrição contém (`IFOOD` → Restaurantes), sem ligar para maiúsculas ou acentos. Elas são testadas de cima para baixo e a primeira que combina decide — suba uma regra específica acima de uma genérica. Regras só preenchem o que está *sem categoria*: nunca mudam uma categoria que você escolheu. O botão "Aplicar as regras ao que está sem categoria" diz quantas transações vai classificar antes de fazer.
+7. **Orçamentos** para pôr limites por categoria, e **Painel** para acompanhar o mês.
 
 Valores podem ser digitados como `1.234,56`, `12,50` ou `12.50` — todos são lidos como o esperado. Um formato ambíguo (ex.: `1,234.56`) é recusado em vez de adivinhado.
 
@@ -48,10 +50,11 @@ Por padrão, em:
 
 | Arquivo | Conteúdo |
 | --- | --- |
-| `meta.json` | Versão do formato (hoje, 3). É o que marca a pasta como um cofre. |
+| `meta.json` | Versão do formato (hoje, 4). É o que marca a pasta como um cofre. |
 | `accounts.json` | Contas e saldos iniciais. |
 | `transactions.json` | Todas as transações. Valores em **centavos inteiros** (`4990` = R$ 49,90). |
 | `groups.json`, `categories.json` | Grupos e categorias. |
+| `rules.json` | Suas regras de classificação, na ordem em que são testadas. |
 | `budgets.json` | Limites mensais. |
 | `imports.json` | Histórico de importações. |
 | `dismissed-transfers.json` | Sugestões de transferência que você recusou. |
@@ -128,7 +131,7 @@ Só quer mexer na interface? `npm run dev` abre em <http://localhost:1420> no na
 ```
 src/
   domain/        regras de negócio puras (sem React, sem disco) — dinheiro, OFX,
-                 importação, saldos, relatórios, categorias, contas, transferências
+                 importação, saldos, relatórios, categorias, contas, transferências, regras
   store/         estado da aplicação (Zustand); grava o cofre numa fila serializada
   persistence/   onde o cofre mora: arquivos JSON (desktop) ou localStorage (navegador)
   ui/            componentes React, uma pasta por tela
@@ -178,7 +181,6 @@ A suíte tem mais de 1.100 testes, em camadas:
 O planejamento vive nas [issues do GitHub](https://github.com/RafaelPulzi/finance-compass-local/issues). Os próximos passos já especificados:
 
 - **#7 / #20** — aceitar ou recusar pares de transferência sugeridos entre duas contas importadas.
-- **#8** — regras de classificação que aprendem ("descrição contém `UBER` → Transporte") e rodam na importação.
 - **#9** — análise semanal (segunda a domingo).
 - **#10** — dividir uma transação entre várias categorias.
 

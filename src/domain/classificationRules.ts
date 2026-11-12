@@ -1,5 +1,6 @@
 import { categoryKind } from "./categories";
 import type { VaultChange } from "./categories";
+import type { CommandOutcome } from "./command";
 import { normalizeForSearch } from "./text";
 import type { CategoryKind, Id, Rule, Transaction, Vault } from "./types";
 
@@ -134,6 +135,57 @@ export function ruleMatchCounts(vault: Vault): Map<Id, number> {
 /** How many Uncategorized Transactions the current Rules would classify. */
 export function pendingRuleCount(vault: Vault): number {
   return assignmentsFromRules(vault.rules, vault.transactions).length;
+}
+
+/**
+ * The Vault with the Rules run over the Transactions that have no Category yet,
+ * so writing a Rule clears the backlog instead of only helping the next Import.
+ * When no Rule matches anything the same Vault comes back, which the store
+ * reads as nothing to save.
+ */
+export function applyRulesToUncategorized(vault: Vault): CommandOutcome<{ applied: number }> {
+  const { transactions, assignments } = applyRules(vault.rules, vault.transactions);
+  if (assignments.length === 0) return { ok: true, vault, applied: 0 };
+  return {
+    ok: true,
+    vault: { ...vault, transactions: [...transactions] },
+    applied: assignments.length,
+  };
+}
+
+/**
+ * The Vault with one Category assigned to many Transactions by hand — the only
+ * practical way to classify a statement's worth of imported entries, and one
+ * mutation however many change.
+ *
+ * A Transfer is never a target even if asked for, and an Income never lands in
+ * an expense Category, whatever the caller sent. Classifying by hand is the
+ * user speaking for themselves, so whatever Rule had decided a Category stops
+ * being the explanation for it (ADR-0008): the `ruleId` is dropped.
+ */
+export function classifyAs(
+  vault: Vault,
+  transactionIds: readonly Id[],
+  categoryId: Id,
+): CommandOutcome<{ changed: number }> {
+  // No ids means no change, and an empty save would still rewrite every file.
+  if (transactionIds.length === 0) return { ok: true, vault, changed: 0 };
+  const kind = categoryKind(vault, categoryId);
+  // A Category the vault doesn't have would orphan every Transaction it touched.
+  if (kind === undefined) {
+    return { ok: false, message: "Escolha uma categoria existente." };
+  }
+  const wanted = new Set(transactionIds);
+  let changed = 0;
+  const transactions = vault.transactions.map((tx) => {
+    if (!wanted.has(tx.id) || tx.kind !== kind || tx.categoryId === categoryId) return tx;
+    changed += 1;
+    const next = { ...tx, categoryId };
+    delete next.ruleId;
+    return next;
+  });
+  if (changed === 0) return { ok: true, vault, changed };
+  return { ok: true, vault: { ...vault, transactions }, changed };
 }
 
 // --- Suggesting a Rule from work the user just did -------------------------

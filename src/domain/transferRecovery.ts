@@ -1,3 +1,4 @@
+import type { CommandOutcome } from "./command";
 import type { Id, Transaction, TransferTransaction, Vault } from "./types";
 
 /**
@@ -206,4 +207,62 @@ export function transfersFromEntries(
     else skipped.push({ transactionId, message: outcome.message });
   }
   return { ok: true, transfers, skipped };
+}
+
+// --- Commands: the Vault each marking leaves behind -------------------------
+
+/** The entry replaced in place: same id, so the row the user was looking at stays put. */
+function spliced(vault: Vault, transaction: Transaction): Vault {
+  return {
+    ...vault,
+    transactions: vault.transactions.map((tx) =>
+      tx.id === transaction.id ? transaction : tx,
+    ),
+  };
+}
+
+/** The Vault with one imported entry marked as a Transfer. */
+export function markAsTransfer(
+  vault: Vault,
+  transactionId: Id,
+  otherAccountId: Id,
+): CommandOutcome {
+  const outcome = transferFromEntry(vault, transactionId, otherAccountId);
+  if (!outcome.ok) return outcome;
+  return { ok: true, vault: spliced(vault, outcome.transaction) };
+}
+
+/**
+ * The Vault with a whole selection marked against one other Account, and what
+ * was skipped. Each Transfer kept the id of the entry it replaces, so the batch
+ * splices in with one pass — one new Vault, one save. Converting nothing is
+ * still `ok`: the skips, not a refusal, are the report.
+ */
+export function markAllAsTransfers(
+  vault: Vault,
+  transactionIds: readonly Id[],
+  otherAccountId: Id,
+): CommandOutcome<{ converted: number; skipped: readonly SkippedEntry[] }> {
+  const outcome = transfersFromEntries(vault, transactionIds, otherAccountId);
+  if (!outcome.ok) return outcome;
+  if (outcome.transfers.length === 0) {
+    return { ok: true, vault, converted: 0, skipped: outcome.skipped };
+  }
+  const byId = new Map(outcome.transfers.map((tx) => [tx.id, tx]));
+  return {
+    ok: true,
+    vault: {
+      ...vault,
+      transactions: vault.transactions.map((tx) => byId.get(tx.id) ?? tx),
+    },
+    converted: outcome.transfers.length,
+    skipped: outcome.skipped,
+  };
+}
+
+/** The Vault with a marking undone: the Transfer is its imported entry again. */
+export function undoMarking(vault: Vault, transferId: Id): CommandOutcome {
+  const outcome = entryFromTransfer(vault, transferId);
+  if (!outcome.ok) return outcome;
+  return { ok: true, vault: spliced(vault, outcome.transaction) };
 }

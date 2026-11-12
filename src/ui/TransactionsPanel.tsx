@@ -1,5 +1,6 @@
 import { type FormEvent, useMemo, useState } from "react";
 import { categoryKind, categoryTree, treeHas } from "../domain/categories";
+import { suggestCategories } from "../domain/categorySuggestions";
 import { normalizedPattern, suggestedPattern } from "../domain/classificationRules";
 import { formatDateBR } from "../domain/dates";
 import { formatBRL, parseBRL } from "../domain/money";
@@ -41,6 +42,7 @@ export function TransactionsPanel() {
   const markTransactionsAsTransfer = useVault((s) => s.markTransactionsAsTransfer);
   const addRule = useVault((s) => s.addRule);
   const revertTransferToEntry = useVault((s) => s.revertTransferToEntry);
+  const applySuggestedCategories = useVault((s) => s.applySuggestedCategories);
 
   const [kind, setKind] = useState<Kind>("expense");
   const [date, setDate] = useState(todayISO());
@@ -268,6 +270,28 @@ export function TransactionsPanel() {
     (tx) => tx.kind !== "transfer" && tx.categoryId === null,
   ).length;
 
+  /**
+   * What the user's own frequent decisions suggest for the backlog: by
+   * Transaction id, so each uncategorized row can show its own offer. Derived
+   * from the vault like every other read here, and applied through the store so
+   * accepting is the same write path as classifying by hand.
+   */
+  const suggestionFor = useMemo(
+    () => new Map(suggestCategories(vault).map((s) => [s.transactionId, s])),
+    [vault],
+  );
+
+  function applyAllSuggestions() {
+    const { applied } = applySuggestedCategories();
+    setBulkNotice(
+      applied === 0
+        ? "Nenhuma sugestão para aplicar."
+        : applied === 1
+          ? "1 transação categorizada a partir das suas decisões anteriores."
+          : `${applied} transações categorizadas a partir das suas decisões anteriores.`,
+    );
+  }
+
   function submit(e: FormEvent) {
     e.preventDefault();
     setError(null);
@@ -305,8 +329,19 @@ export function TransactionsPanel() {
           Transações
         </h2>
         {uncategorizedCount > 0 && (
-          <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-300">
-            {uncategorizedCount} sem categoria
+          <span className="flex items-center gap-2">
+            <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+              {uncategorizedCount} sem categoria
+            </span>
+            {suggestionFor.size > 0 && (
+              <button
+                type="button"
+                className="rounded-full bg-sky-100 px-2 py-0.5 text-xs text-sky-800 underline hover:bg-sky-200 dark:bg-sky-950 dark:text-sky-300 dark:hover:bg-sky-900"
+                onClick={applyAllSuggestions}
+              >
+                aplicar {suggestionFor.size === 1 ? "1 sugestão" : `${suggestionFor.size} sugestões`}
+              </button>
+            )}
           </span>
         )}
       </div>
@@ -555,6 +590,23 @@ export function TransactionsPanel() {
                       <option value="">Sem categoria</option>
                       <CategoryOptions tree={treesByKind[tx.kind]} />
                     </select>
+                    {/* The Category the user's own repeated decisions point to;
+                        one click accepts it through the same write classifying
+                        by hand uses. */}
+                    {suggestionFor.has(tx.id) && (
+                      <button
+                        type="button"
+                        aria-label={`Aceitar sugestão para ${tx.description || "transação sem descrição"}`}
+                        className="rounded border border-sky-300 bg-sky-50 px-1 py-0.5 text-xs text-sky-900 hover:bg-sky-100 dark:border-sky-800 dark:bg-sky-950 dark:text-sky-200 dark:hover:bg-sky-900"
+                        onClick={() => {
+                          const suggestion = suggestionFor.get(tx.id);
+                          if (suggestion !== undefined)
+                            setTransactionCategory(tx.id, suggestion.categoryId);
+                        }}
+                      >
+                        sugestão: {categoryName.get(suggestionFor.get(tx.id)?.categoryId ?? "") ?? "?"}
+                      </button>
+                    )}
                     · {accountName.get(tx.accountId) ?? "?"}
                   </span>
                 ) : (

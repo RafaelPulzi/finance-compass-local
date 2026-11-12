@@ -1,4 +1,5 @@
 import { categoryKind } from "./categories";
+import type { CommandOutcome } from "./command";
 import { isValidISODate } from "./dates";
 import type { Centavos } from "./money";
 import type { Id, ISODate, Transaction, Vault } from "./types";
@@ -34,6 +35,45 @@ export interface TransactionEdit {
 export type EditOutcome =
   | { ok: true; transaction: Transaction }
   | { ok: false; message: string };
+
+/** The Vault with the Transaction corrected in place, or why it can't be. */
+export function editTransaction(
+  vault: Vault,
+  transactionId: Id,
+  changes: TransactionEdit,
+): CommandOutcome {
+  const outcome = editedTransaction(vault, transactionId, changes);
+  if (!outcome.ok) return outcome;
+  return {
+    ok: true,
+    vault: {
+      ...vault,
+      transactions: vault.transactions.map((tx) =>
+        tx.id === transactionId ? outcome.transaction : tx,
+      ),
+    },
+  };
+}
+
+/**
+ * The Vault without the Transaction. Removing one that isn't there returns the
+ * same Vault, which the store reads as nothing to save. The Import record it
+ * came from is left alone: it stays an honest history of what that Import did.
+ * The `fitid` goes with the Transaction, so re-importing the same Statement
+ * will add it back.
+ */
+export function deleteTransaction(vault: Vault, transactionId: Id): CommandOutcome {
+  if (!vault.transactions.some((tx) => tx.id === transactionId)) {
+    return { ok: true, vault };
+  }
+  return {
+    ok: true,
+    vault: {
+      ...vault,
+      transactions: vault.transactions.filter((tx) => tx.id !== transactionId),
+    },
+  };
+}
 
 function hasAccount(vault: Vault, accountId: Id): boolean {
   return vault.accounts.some((a) => a.id === accountId);

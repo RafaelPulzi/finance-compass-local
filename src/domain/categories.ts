@@ -1,3 +1,4 @@
+import type { CommandOutcome } from "./command";
 import { normalizeForSearch } from "./text";
 import type { Category, CategoryKind, Group, Id, Vault } from "./types";
 
@@ -14,7 +15,7 @@ import type { Category, CategoryKind, Group, Id, Vault } from "./types";
  * Uncategorized would empty Category totals without anyone noticing.
  */
 
-export type VaultChange = { ok: true; vault: Vault } | { ok: false; message: string };
+export type VaultChange = CommandOutcome;
 
 /** The kind a Category classifies, or undefined if the Vault has no such Category. */
 export function categoryKind(vault: Vault, categoryId: Id): CategoryKind | undefined {

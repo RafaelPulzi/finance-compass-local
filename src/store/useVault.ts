@@ -1,30 +1,28 @@
 import { create } from "zustand";
 import * as accountRules from "../domain/accounts";
 import type { AccountInput } from "../domain/accounts";
+import * as budgetRules from "../domain/budgets";
 import * as categoryRules from "../domain/categories";
+import * as suggestions from "../domain/categorySuggestions";
 import * as classification from "../domain/classificationRules";
 import type { RuleInput } from "../domain/classificationRules";
-import { categoryKind } from "../domain/categories";
+import type { CommandOutcome } from "../domain/command";
 import { newId } from "../domain/id";
 import type { Centavos } from "../domain/money";
 import { seedVault } from "../domain/seed";
-import { type ImportPlan, toTransactions } from "../domain/statementImport";
-import { type NewTransaction, createdTransaction } from "../domain/transactionCreate";
-import { type TransactionEdit, editedTransaction } from "../domain/transactionEdit";
-import {
-  type SkippedEntry,
-  entryFromTransfer,
-  transferFromEntry,
-  transfersFromEntries,
-} from "../domain/transferRecovery";
+import * as statementImport from "../domain/statementImport";
+import type { ImportPlan } from "../domain/statementImport";
+import * as txCreate from "../domain/transactionCreate";
+import * as txEdit from "../domain/transactionEdit";
+import type { TransactionEdit } from "../domain/transactionEdit";
+import * as recovery from "../domain/transferRecovery";
+import type { SkippedEntry } from "../domain/transferRecovery";
 import type {
   Account,
-  Budget,
   Category,
   Group,
   ISODate,
   Id,
-  ImportRecord,
   Rule,
   Vault,
 } from "../domain/types";
@@ -122,12 +120,16 @@ interface VaultState {
   /**
    * Run the Rules over the Transactions that have no Category yet, so writing a
    * Rule clears the backlog instead of only helping the next Import.
-   *
-   * One mutation and therefore one save, however many Transactions change — the
-   * same invariant bulk classification and bulk marking rest on. Nothing is
-   * written when no Rule matches anything.
    */
   applyRulesToUncategorized: () => { applied: number };
+  /**
+   * Classify every Uncategorized Transaction whose description the user has
+   * already filed, by hand and repeatedly, under one Category — the Suggestions
+   * the Transactions page shows, applied in one mutation. Fills gaps only,
+   * exactly like the Rules (ADR-0008), so it is idempotent and never overrules
+   * a decision.
+   */
+  applySuggestedCategories: () => { applied: number };
 
   addIncome: (input: {
     date: ISODate;
@@ -171,12 +173,8 @@ interface VaultState {
   setTransactionCategory: (transactionId: Id, categoryId: Id) => void;
   /**
    * Assign one Category to many Transactions at once — the only practical way to
-   * classify a statement's worth of imported Transactions.
-   *
-   * Deliberately not a loop over `setTransactionCategory`: every mutation
-   * persists the whole vault, so N calls would queue N multi-file writes onto
-   * the save chain. This is one mutation and therefore one save, whether it's
-   * two Transactions or five hundred.
+   * classify a statement's worth of imported Transactions. One mutation and
+   * therefore one save, whether it's two Transactions or five hundred.
    */
   setTransactionCategoryMany: (transactionIds: readonly Id[], categoryId: Id) => void;
   /**
@@ -206,13 +204,8 @@ interface VaultState {
   ) => TransactionEditResult;
   /**
    * Mark a whole selection as Transfers against one other Account — the only
-   * practical way through a Statement's worth of internal moves.
-   *
-   * Deliberately not a loop over `markTransactionAsTransfer`, for the same
-   * reason `setTransactionCategoryMany` is not a loop: every mutation persists
-   * the whole vault, so N calls would queue N multi-file writes onto the save
-   * chain. This is one mutation and therefore one save, whether it converts two
-   * entries or two hundred.
+   * practical way through a Statement's worth of internal moves. One mutation
+   * and therefore one save, whether it converts two entries or two hundred.
    */
   markTransactionsAsTransfer: (
     transactionIds: readonly Id[],
@@ -291,11 +284,24 @@ export const useVault = create<VaultState>((set, get) => {
     void persist(next, reportSave);
   };
 
-  /** Write a domain verdict: the new Vault on `ok`, nothing at all on a refusal. */
-  const apply = (change: categoryRules.VaultChange): ActionResult => {
-    if (!change.ok) return { ok: false, message: change.message };
-    if (change.vault !== get().vault) mutate(change.vault);
-    return { ok: true };
+  /**
+   * Run one Vault command: the single place a domain verdict becomes a write.
+   *
+   * A refusal writes nothing. The same Vault back means nothing changed, so
+   * nothing is saved — an empty save would still rewrite every file. A new
+   * Vault is one mutation and therefore one save, whatever the command touched.
+   * The command's report comes back to the caller with the `vault` removed:
+   * what the UI gets to know travels through the report, never the model.
+   */
+  const run = <R extends object>(
+    command: (vault: Vault) => CommandOutcome<R>,
+  ): ({ ok: true } & R) | Refusal => {
+    const vault = get().vault;
+    const outcome = command(vault);
+    if (!outcome.ok) return outcome;
+    if (outcome.vault !== vault) mutate(outcome.vault);
+    const { vault: _applied, ...report } = outcome;
+    return report as { ok: true } & R;
   };
 
   /**
@@ -337,14 +343,6 @@ export const useVault = create<VaultState>((set, get) => {
     } catch (e) {
       return { ok: false, message: messageOf(e) };
     }
-  };
-
-  const addTx = (input: NewTransaction): ActionResult => {
-    const vault = get().vault;
-    const outcome = createdTransaction(vault, input, newId());
-    if (!outcome.ok) return { ok: false, message: outcome.message };
-    mutate({ ...vault, transactions: [...vault.transactions, outcome.transaction] });
-    return { ok: true };
   };
 
   return {
@@ -419,251 +417,125 @@ export const useVault = create<VaultState>((set, get) => {
     },
 
     addAccount(input) {
-      const outcome = accountRules.addAccount(get().vault, input, newId);
-      if (!outcome.ok) return outcome;
-      mutate(outcome.vault);
-      return { ok: true, account: outcome.account };
+      return run((v) => accountRules.addAccount(v, input, newId));
     },
 
     editAccount(accountId, input) {
-      return apply(accountRules.editAccount(get().vault, accountId, input));
+      return run((v) => accountRules.editAccount(v, accountId, input));
     },
 
     deleteAccount(accountId) {
-      return apply(accountRules.deleteAccount(get().vault, accountId));
+      return run((v) => accountRules.deleteAccount(v, accountId));
     },
 
     addGroup(input) {
-      const outcome = categoryRules.addGroup(get().vault, input, newId);
-      if (!outcome.ok) return outcome;
-      mutate(outcome.vault);
-      return { ok: true, group: outcome.group };
+      return run((v) => categoryRules.addGroup(v, input, newId));
     },
 
     addCategory(input) {
-      const outcome = categoryRules.addCategory(get().vault, input, newId);
-      if (!outcome.ok) return outcome;
-      mutate(outcome.vault);
-      return { ok: true, category: outcome.category };
+      return run((v) => categoryRules.addCategory(v, input, newId));
     },
 
     renameGroup(groupId, name) {
-      return apply(categoryRules.renameGroup(get().vault, groupId, name));
+      return run((v) => categoryRules.renameGroup(v, groupId, name));
     },
 
     renameCategory(categoryId, name) {
-      return apply(categoryRules.renameCategory(get().vault, categoryId, name));
+      return run((v) => categoryRules.renameCategory(v, categoryId, name));
     },
 
     moveCategory(categoryId, groupId) {
-      return apply(categoryRules.moveCategory(get().vault, categoryId, groupId));
+      return run((v) => categoryRules.moveCategory(v, categoryId, groupId));
     },
 
     deleteCategory(categoryId) {
-      return apply(categoryRules.deleteCategory(get().vault, categoryId));
+      return run((v) => categoryRules.deleteCategory(v, categoryId));
     },
 
     deleteGroup(groupId) {
-      return apply(categoryRules.deleteGroup(get().vault, groupId));
+      return run((v) => categoryRules.deleteGroup(v, groupId));
     },
 
     addRule(input) {
-      const outcome = classification.addRule(get().vault, input, newId);
-      if (!outcome.ok) return outcome;
-      mutate(outcome.vault);
-      return { ok: true, rule: outcome.rule };
+      return run((v) => classification.addRule(v, input, newId));
     },
 
     editRule(ruleId, input) {
-      return apply(classification.editRule(get().vault, ruleId, input));
+      return run((v) => classification.editRule(v, ruleId, input));
     },
 
     deleteRule(ruleId) {
-      return apply(classification.deleteRule(get().vault, ruleId));
+      return run((v) => classification.deleteRule(v, ruleId));
     },
 
     moveRule(ruleId, offset) {
-      return apply(classification.moveRule(get().vault, ruleId, offset));
+      return run((v) => classification.moveRule(v, ruleId, offset));
     },
 
     applyRulesToUncategorized() {
-      const vault = get().vault;
-      const { transactions, assignments } = classification.applyRules(
-        vault.rules,
-        vault.transactions,
-      );
-      // Nothing matched, so there is nothing to write — and an empty save would
-      // still rewrite every file in the vault.
-      if (assignments.length === 0) return { applied: 0 };
-      mutate({ ...vault, transactions: [...transactions] });
-      return { applied: assignments.length };
+      const result = run(classification.applyRulesToUncategorized);
+      return { applied: result.ok ? result.applied : 0 };
+    },
+
+    applySuggestedCategories() {
+      const result = run(suggestions.applySuggestions);
+      return { applied: result.ok ? result.applied : 0 };
     },
 
     addIncome(input) {
-      return addTx({ kind: "income", ...input });
+      return run((v) => txCreate.addTransaction(v, { kind: "income", ...input }, newId()));
     },
 
     addExpense(input) {
-      return addTx({ kind: "expense", ...input });
+      return run((v) => txCreate.addTransaction(v, { kind: "expense", ...input }, newId()));
     },
 
     addTransfer(input) {
-      return addTx({ kind: "transfer", ...input });
+      return run((v) => txCreate.addTransaction(v, { kind: "transfer", ...input }, newId()));
     },
 
-    setBudget({ categoryId, monthlyLimit }) {
-      const vault = get().vault;
-      if (!Number.isInteger(monthlyLimit) || monthlyLimit < 0) {
-        return { ok: false, message: "Informe um limite igual ou maior que zero." };
-      }
-      // Only expenses count toward a Budget, so a Budget on an income Category
-      // would be a limit nothing could ever reach.
-      if (categoryKind(vault, categoryId) !== "expense") {
-        return { ok: false, message: "Orçamentos valem só para categorias de despesa." };
-      }
-      const existing = vault.budgets.find((b) => b.categoryId === categoryId);
-      if (existing?.monthlyLimit === monthlyLimit) return { ok: true };
-      const budgets = existing
-        ? vault.budgets.map((b) =>
-            b.categoryId === categoryId ? { ...b, monthlyLimit } : b,
-          )
-        : [...vault.budgets, { id: newId(), categoryId, monthlyLimit } satisfies Budget];
-      mutate({ ...vault, budgets });
-      return { ok: true };
+    setBudget(input) {
+      return run((v) => budgetRules.setBudget(v, input, newId));
     },
 
-    commitImport({ plan, fileName }) {
-      const vault = get().vault;
-      const added = toTransactions(plan.additions, plan.accountId, newId);
-      // The Rules run here rather than inside the import domain: `toTransactions`
-      // keeps producing Uncategorized entries and stays separately testable, and
-      // an Import in a vault with no Rules behaves exactly as it did before.
-      // Only the additions are offered to the Rules — what was already in the
-      // vault is the backlog action's business, not this one's.
-      const { transactions: classified, assignments } = classification.applyRules(
-        vault.rules,
-        added,
+    commitImport(input) {
+      const result = run((v) =>
+        statementImport.commitImport(v, input, {
+          newId,
+          now: () => new Date().toISOString(),
+        }),
       );
-      const record: ImportRecord = {
-        id: newId(),
-        accountId: plan.accountId,
-        importedAt: new Date().toISOString(),
-        fileName,
-        added: added.length,
-        skipped: plan.duplicates.length,
-      };
-      mutate({
-        ...vault,
-        transactions: [...vault.transactions, ...classified],
-        imports: [...vault.imports, record],
-      });
-      return { added: added.length, classified: assignments.length };
+      return result.ok
+        ? { added: result.added, classified: result.classified }
+        : { added: 0, classified: 0 };
     },
 
     setTransactionCategory(transactionId, categoryId) {
-      get().setTransactionCategoryMany([transactionId], categoryId);
+      run((v) => classification.classifyAs(v, [transactionId], categoryId));
     },
 
     setTransactionCategoryMany(transactionIds, categoryId) {
-      // No ids means no change, and an empty save would still rewrite every file.
-      if (transactionIds.length === 0) return;
-      const vault = get().vault;
-      const kind = categoryKind(vault, categoryId);
-      // A Category the vault doesn't have would orphan every Transaction it touched.
-      if (kind === undefined) return;
-      const wanted = new Set(transactionIds);
-      let changed = false;
-      const transactions = vault.transactions.map((tx) => {
-        // A Transfer carries no Category, so it's never a target even if asked
-        // for — and an Income never lands in an expense Category, or vice versa.
-        if (!wanted.has(tx.id) || tx.kind !== kind || tx.categoryId === categoryId) return tx;
-        changed = true;
-        // Classifying by hand is the user speaking for themselves, so whatever
-        // Rule had decided this Category stops being the explanation for it.
-        const next = { ...tx, categoryId };
-        delete next.ruleId;
-        return next;
-      });
-      if (changed) mutate({ ...vault, transactions });
+      run((v) => classification.classifyAs(v, transactionIds, categoryId));
     },
 
     editTransaction(transactionId, changes) {
-      const vault = get().vault;
-      // The domain decides what the Transaction becomes, or refuses; nothing is
-      // written until it says yes, so a refused edit leaves the vault as it was.
-      const outcome = editedTransaction(vault, transactionId, changes);
-      if (!outcome.ok) return { ok: false, message: outcome.message };
-
-      mutate({
-        ...vault,
-        transactions: vault.transactions.map((tx) =>
-          tx.id === transactionId ? outcome.transaction : tx,
-        ),
-      });
-      return { ok: true };
+      return run((v) => txEdit.editTransaction(v, transactionId, changes));
     },
 
     deleteTransaction(transactionId) {
-      const vault = get().vault;
-      // Nothing to remove means nothing to save.
-      if (!vault.transactions.some((tx) => tx.id === transactionId)) return;
-      mutate({
-        ...vault,
-        transactions: vault.transactions.filter((tx) => tx.id !== transactionId),
-      });
+      run((v) => txEdit.deleteTransaction(v, transactionId));
     },
 
     markTransactionAsTransfer(transactionId, otherAccountId) {
-      const vault = get().vault;
-      const outcome = transferFromEntry(vault, transactionId, otherAccountId);
-      if (!outcome.ok) return { ok: false, message: outcome.message };
-
-      // One mutation, so one save: the entry is replaced in place rather than
-      // removed and re-added, which would be two writes and a vault that is
-      // briefly missing the money.
-      mutate({
-        ...vault,
-        transactions: vault.transactions.map((tx) =>
-          tx.id === transactionId ? outcome.transaction : tx,
-        ),
-      });
-      return { ok: true };
+      return run((v) => recovery.markAsTransfer(v, transactionId, otherAccountId));
     },
 
     markTransactionsAsTransfer(transactionIds, otherAccountId) {
-      const vault = get().vault;
-      const outcome = transfersFromEntries(vault, transactionIds, otherAccountId);
-      if (!outcome.ok) return { ok: false, message: outcome.message };
-
-      if (outcome.transfers.length > 0) {
-        // Each Transfer kept the id of the entry it replaces, so the whole batch
-        // is spliced in by one pass over the Transactions — one new vault, one
-        // save.
-        const byId = new Map(outcome.transfers.map((tx) => [tx.id, tx]));
-        mutate({
-          ...vault,
-          transactions: vault.transactions.map((tx) => byId.get(tx.id) ?? tx),
-        });
-      }
-      return {
-        ok: true,
-        converted: outcome.transfers.length,
-        skipped: outcome.skipped,
-      };
+      return run((v) => recovery.markAllAsTransfers(v, transactionIds, otherAccountId));
     },
 
     revertTransferToEntry(transferId) {
-      const vault = get().vault;
-      const outcome = entryFromTransfer(vault, transferId);
-      if (!outcome.ok) return { ok: false, message: outcome.message };
-
-      mutate({
-        ...vault,
-        transactions: vault.transactions.map((tx) =>
-          tx.id === transferId ? outcome.transaction : tx,
-        ),
-      });
-      return { ok: true };
+      return run((v) => recovery.undoMarking(v, transferId));
     },
   };
 });

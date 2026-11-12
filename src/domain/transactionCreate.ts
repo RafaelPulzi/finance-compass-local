@@ -1,4 +1,5 @@
 import { categoryKind } from "./categories";
+import type { CommandOutcome } from "./command";
 import { isValidISODate } from "./dates";
 import type { Centavos } from "./money";
 import type { Id, ISODate, Transaction, Vault } from "./types";
@@ -38,6 +39,25 @@ export type CreateOutcome =
 
 function hasAccount(vault: Vault, accountId: Id): boolean {
   return vault.accounts.some((a) => a.id === accountId);
+}
+
+/**
+ * The Vault with the new Transaction recorded, whatever its kind — the caller
+ * says "income", "expense" or "transfer" in the input instead of picking one of
+ * three entry points that only differ in that word.
+ */
+export function addTransaction(
+  vault: Vault,
+  input: NewTransaction,
+  id: Id,
+): CommandOutcome<{ transaction: Transaction }> {
+  const outcome = createdTransaction(vault, input, id);
+  if (!outcome.ok) return outcome;
+  return {
+    ok: true,
+    vault: { ...vault, transactions: [...vault.transactions, outcome.transaction] },
+    transaction: outcome.transaction,
+  };
 }
 
 export function createdTransaction(

@@ -1,5 +1,5 @@
 import type { Vault } from "../domain/types";
-import { VAULT_SCHEMA_VERSION } from "../domain/types";
+import { VAULT_SCHEMA_VERSION, isBudgeted } from "../domain/types";
 
 /**
  * A place a Vault can be loaded from and saved to. The domain and UI never know
@@ -61,7 +61,10 @@ export function parseVault(raw: unknown): Vault {
     // Absent in a v3 vault, which had no Rules at all.
     rules: listOf(stored.rules, "rules"),
     transactions: listOf(stored.transactions, "transactions"),
-    budgets: listOf(stored.budgets, "budgets"),
+    // Older versions kept a `monthlyLimit: 0` row for "not budgeted"; now the
+    // row's absence says that, so legacy zero rows are scrubbed on the way in
+    // (they metered nothing, and they used to block deleting their Category).
+    budgets: listOf(stored.budgets, "budgets").filter(isBudgeted),
     imports: listOf(stored.imports, "imports"),
     dismissedTransferPairs: listOf(stored.dismissedTransferPairs, "dismissedTransferPairs"),
   };

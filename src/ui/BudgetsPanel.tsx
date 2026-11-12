@@ -9,13 +9,7 @@ export function BudgetsPanel({ month }: { month: MonthKey }) {
   const vault = useVault((s) => s.vault);
   const setBudget = useVault((s) => s.setBudget);
 
-  // A limit of 0 means "not budgeted" (see the hint below), so it is no meter.
-  // Filtering before the empty check is what makes "nothing defined" show when
-  // every limit has been cleared back to 0, instead of an empty list.
-  const statuses = useMemo(
-    () => budgetStatusForMonth(vault, month).filter((s) => s.limit > 0),
-    [vault, month],
-  );
+  const statuses = useMemo(() => budgetStatusForMonth(vault, month), [vault, month]);
 
   /** Expense categories are the only things a Budget can apply to. */
   const expenseCategories = useMemo(() => {

@@ -31,10 +31,7 @@ export function DashboardPage({ month }: { month: MonthKey }) {
     () => monthlyTotals(vault, recentMonths(month, 6)),
     [vault, month],
   );
-  const budgets = useMemo(
-    () => budgetStatusForMonth(vault, month).filter((b) => b.limit > 0),
-    [vault, month],
-  );
+  const budgets = useMemo(() => budgetStatusForMonth(vault, month), [vault, month]);
 
   const current = totals[totals.length - 1];
 

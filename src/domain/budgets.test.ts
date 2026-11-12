@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { setBudget } from "./budgets";
+import { categoryUsage, deleteCategory } from "./categories";
 import { centavos } from "./money";
 import type { Vault } from "./types";
 import { emptyVault } from "./types";
@@ -46,6 +47,20 @@ describe("setBudget", () => {
     expect(outcome.ok && outcome.vault).toBe(vault);
   });
 
+  it("removes the Budget when the limit is set to zero: zero is 'not budgeted'", () => {
+    const vault: Vault = {
+      ...base,
+      budgets: [{ id: "b-1", categoryId: "cat-market", monthlyLimit: centavos(80000) }],
+    };
+    const outcome = setBudget(vault, { categoryId: "cat-market", monthlyLimit: centavos(0) }, newId);
+    expect(outcome.ok && outcome.vault.budgets).toEqual([]);
+  });
+
+  it("returns the same Vault for zero on a Category that was never budgeted", () => {
+    const outcome = setBudget(base, { categoryId: "cat-market", monthlyLimit: centavos(0) }, newId);
+    expect(outcome.ok && outcome.vault).toBe(base);
+  });
+
   it("refuses a negative or fractional limit", () => {
     expect(setBudget(base, { categoryId: "cat-market", monthlyLimit: -1 as never }, newId).ok).toBe(false);
     expect(setBudget(base, { categoryId: "cat-market", monthlyLimit: 10.5 as never }, newId).ok).toBe(false);
@@ -58,5 +73,16 @@ describe("setBudget", () => {
 
   it("refuses a Category the Vault does not have", () => {
     expect(setBudget(base, { categoryId: "cat-ghost", monthlyLimit: centavos(1000) }, newId).ok).toBe(false);
+  });
+
+  it("never leaves a zero Budget blocking its Category's deletion (the old bug)", () => {
+    // A legacy vault row with limit 0: invisible in every panel, yet it used to
+    // count as a use and refuse the delete with "ainda é usada por 1 orçamento".
+    const vault: Vault = {
+      ...base,
+      budgets: [{ id: "b-1", categoryId: "cat-market", monthlyLimit: centavos(0) }],
+    };
+    expect(categoryUsage(vault, "cat-market")).toEqual({ transactions: 0, budgets: 0 });
+    expect(deleteCategory(vault, "cat-market").ok).toBe(true);
   });
 });

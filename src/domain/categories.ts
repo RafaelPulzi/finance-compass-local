@@ -1,6 +1,7 @@
 import type { CommandOutcome } from "./command";
 import { normalizeForSearch } from "./text";
 import type { Category, CategoryKind, Group, Id, Vault } from "./types";
+import { isBudgeted } from "./types";
 
 /**
  * Managing the Group → Category tree the user classifies into.
@@ -35,7 +36,11 @@ export function categoryUsage(vault: Vault, categoryId: Id): CategoryUsage {
   for (const tx of vault.transactions) {
     if (tx.kind !== "transfer" && tx.categoryId === categoryId) transactions += 1;
   }
-  const budgets = vault.budgets.filter((b) => b.categoryId === categoryId).length;
+  // A zero-limit row is "not budgeted" (see isBudgeted), so it is no use: a
+  // Budget the user cannot see must never be what blocks deleting a Category.
+  const budgets = vault.budgets.filter(
+    (b) => b.categoryId === categoryId && isBudgeted(b),
+  ).length;
   return { transactions, budgets };
 }
 

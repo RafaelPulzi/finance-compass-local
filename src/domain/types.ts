@@ -154,6 +154,17 @@ export interface Budget {
   monthlyLimit: Centavos;
 }
 
+/**
+ * Whether a Budget row means anything: a zero limit is "not budgeted", not a
+ * budget of nothing. Setting a limit to zero removes the row and older vaults
+ * are scrubbed on load, so a zero row should not exist — but one injected or
+ * left over must meter nothing, count as no use of its Category, and never
+ * block deleting it. This predicate is the one place that meaning lives.
+ */
+export function isBudgeted(budget: Budget): boolean {
+  return budget.monthlyLimit > 0;
+}
+
 // --- Imports --------------------------------------------------------------
 
 /**

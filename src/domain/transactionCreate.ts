@@ -1,7 +1,13 @@
-import { categoryKind } from "./categories";
 import type { CommandOutcome } from "./command";
-import { isValidISODate } from "./dates";
 import type { Centavos } from "./money";
+import {
+  badAmount,
+  badDate,
+  cleanDescription,
+  missingAccount,
+  sameAccountTwice,
+  wrongCategory,
+} from "./transactionValidation";
 import type { Id, ISODate, Transaction, Vault } from "./types";
 
 /**
@@ -37,10 +43,6 @@ export type CreateOutcome =
   | { ok: true; transaction: Transaction }
   | { ok: false; message: string };
 
-function hasAccount(vault: Vault, accountId: Id): boolean {
-  return vault.accounts.some((a) => a.id === accountId);
-}
-
 /**
  * The Vault with the new Transaction recorded, whatever its kind — the caller
  * says "income", "expense" or "transfer" in the input instead of picking one of
@@ -65,21 +67,15 @@ export function createdTransaction(
   input: NewTransaction,
   id: Id,
 ): CreateOutcome {
-  if (!Number.isInteger(input.amount) || input.amount <= 0) {
-    return { ok: false, message: "Informe um valor maior que zero." };
-  }
-  if (!isValidISODate(input.date)) {
-    return { ok: false, message: "Informe uma data válida." };
-  }
-  const description = input.description.trim();
+  const complaint = badAmount(input.amount) ?? badDate(input.date);
+  if (complaint !== null) return complaint;
+  const description = cleanDescription(input.description);
 
   if (input.kind === "transfer") {
-    if (!hasAccount(vault, input.fromAccountId) || !hasAccount(vault, input.toAccountId)) {
-      return { ok: false, message: "Conta inexistente." };
-    }
-    if (input.fromAccountId === input.toAccountId) {
-      return { ok: false, message: "Origem e destino devem ser diferentes." };
-    }
+    const refusedTransfer =
+      missingAccount(vault, input.fromAccountId, input.toAccountId) ??
+      sameAccountTwice(input.fromAccountId, input.toAccountId);
+    if (refusedTransfer !== null) return refusedTransfer;
     return {
       ok: true,
       transaction: {
@@ -94,19 +90,10 @@ export function createdTransaction(
     };
   }
 
-  if (!hasAccount(vault, input.accountId)) {
-    return { ok: false, message: "Conta inexistente." };
-  }
-  if (input.categoryId !== null) {
-    const kind = categoryKind(vault, input.categoryId);
-    if (kind === undefined) return { ok: false, message: "Categoria inexistente." };
-    if (kind !== input.kind) {
-      return {
-        ok: false,
-        message: "Essa categoria não vale para esse tipo de transação.",
-      };
-    }
-  }
+  const refused =
+    missingAccount(vault, input.accountId) ??
+    wrongCategory(vault, input.categoryId, input.kind);
+  if (refused !== null) return refused;
   return {
     ok: true,
     transaction: {

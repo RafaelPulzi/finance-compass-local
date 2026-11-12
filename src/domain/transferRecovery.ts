@@ -1,4 +1,5 @@
 import type { CommandOutcome } from "./command";
+import { missingAccount } from "./transactionValidation";
 import type { Id, Transaction, TransferTransaction, Vault } from "./types";
 
 /**
@@ -45,9 +46,8 @@ export function transferFromEntry(
   if (entry.kind === "transfer") {
     return { ok: false, message: "Essa transação já é uma transferência." };
   }
-  if (!vault.accounts.some((a) => a.id === otherAccountId)) {
-    return { ok: false, message: "Conta inexistente." };
-  }
+  const noAccount = missingAccount(vault, otherAccountId);
+  if (noAccount !== null) return noAccount;
   if (otherAccountId === entry.accountId) {
     // The same rule the manual Transfer form enforces: money that left and
     // arrived in one Account never moved between two.
@@ -191,9 +191,8 @@ export function transfersFromEntries(
 ): BulkRecoveryOutcome {
   // The whole batch shares one other Account, so a bad Account is a refusal of
   // the batch and not a hundred identical skips.
-  if (!vault.accounts.some((a) => a.id === otherAccountId)) {
-    return { ok: false, message: "Conta inexistente." };
-  }
+  const noAccount = missingAccount(vault, otherAccountId);
+  if (noAccount !== null) return noAccount;
   if (transactionIds.length === 0) {
     return { ok: false, message: "Selecione pelo menos um lançamento." };
   }

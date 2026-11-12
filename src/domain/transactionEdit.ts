@@ -1,7 +1,14 @@
 import { categoryKind } from "./categories";
 import type { CommandOutcome } from "./command";
-import { isValidISODate } from "./dates";
 import type { Centavos } from "./money";
+import {
+  badAmount,
+  badDate,
+  cleanDescription,
+  missingAccount,
+  sameAccountTwice,
+  wrongCategory,
+} from "./transactionValidation";
 import type { Id, ISODate, Transaction, Vault } from "./types";
 
 /**
@@ -35,6 +42,9 @@ export interface TransactionEdit {
 export type EditOutcome =
   | { ok: true; transaction: Transaction }
   | { ok: false; message: string };
+
+// The checks themselves live in transactionValidation, shared with the create
+// and recovery paths, so the three cannot drift apart again.
 
 /** The Vault with the Transaction corrected in place, or why it can't be. */
 export function editTransaction(
@@ -75,10 +85,6 @@ export function deleteTransaction(vault: Vault, transactionId: Id): CommandOutco
   };
 }
 
-function hasAccount(vault: Vault, accountId: Id): boolean {
-  return vault.accounts.some((a) => a.id === accountId);
-}
-
 /**
  * What the Transaction becomes after `changes`, or why it can't.
  *
@@ -97,16 +103,16 @@ export function editedTransaction(
   }
 
   const amount = changes.amount ?? current.amount;
-  if (!Number.isInteger(amount) || amount <= 0) {
-    return { ok: false, message: "Informe um valor maior que zero." };
-  }
-
   const date = changes.date ?? current.date;
-  if (!isValidISODate(date)) {
-    return { ok: false, message: "Informe uma data válida." };
-  }
+  const complaint = badAmount(amount) ?? badDate(date);
+  if (complaint !== null) return complaint;
 
-  const description = changes.description ?? current.description;
+  // A description being corrected is trimmed like a new one; one already
+  // recorded is left exactly as it is.
+  const description =
+    changes.description === undefined
+      ? current.description
+      : cleanDescription(changes.description);
 
   if (current.kind === "transfer") {
     if (changes.kind !== undefined) {
@@ -121,12 +127,10 @@ export function editedTransaction(
 
     const fromAccountId = changes.fromAccountId ?? current.fromAccountId;
     const toAccountId = changes.toAccountId ?? current.toAccountId;
-    if (!hasAccount(vault, fromAccountId) || !hasAccount(vault, toAccountId)) {
-      return { ok: false, message: "Conta inexistente." };
-    }
-    if (fromAccountId === toAccountId) {
-      return { ok: false, message: "Origem e destino devem ser diferentes." };
-    }
+    const refused =
+      missingAccount(vault, fromAccountId, toAccountId) ??
+      sameAccountTwice(fromAccountId, toAccountId);
+    if (refused !== null) return refused;
 
     // A recovered Transfer's imported side is a fact from the bank: the
     // Statement of that Account said the money left it (or arrived in it).
@@ -154,30 +158,23 @@ export function editedTransaction(
 
   const kind = changes.kind ?? current.kind;
   const accountId = changes.accountId ?? current.accountId;
-  if (!hasAccount(vault, accountId)) {
-    return { ok: false, message: "Conta inexistente." };
-  }
+  const noAccount = missingAccount(vault, accountId);
+  if (noAccount !== null) return noAccount;
 
   let categoryId =
     changes.categoryId !== undefined ? changes.categoryId : current.categoryId;
-  if (categoryId !== null) {
-    const kindOfCategory = categoryKind(vault, categoryId);
-    if (kindOfCategory === undefined) {
-      return { ok: false, message: "Categoria inexistente." };
-    }
-    if (kindOfCategory !== kind) {
-      // Asking for a Category of the wrong kind outright is a mistake worth
-      // reporting. Keeping one that only became wrong because the kind flipped
-      // is not: the Category is dropped, so the Transaction goes Uncategorized
-      // rather than an Income sitting in an expense Category.
-      if (changes.categoryId !== undefined) {
-        return {
-          ok: false,
-          message: "Essa categoria não vale para esse tipo de transação.",
-        };
-      }
-      categoryId = null;
-    }
+  const refusedCategory = categoryId === null ? null : wrongCategory(vault, categoryId, kind);
+  if (refusedCategory !== null) {
+    // Asking for a wrong or missing Category outright is a mistake worth
+    // reporting. Keeping one that only became wrong because the kind flipped
+    // is not: the Category is dropped, so the Transaction goes Uncategorized
+    // rather than an Income sitting in an expense Category.
+    const kindFlippedOnly =
+      changes.categoryId === undefined &&
+      categoryId !== null &&
+      categoryKind(vault, categoryId) !== undefined;
+    if (!kindFlippedOnly) return refusedCategory;
+    categoryId = null;
   }
 
   return {

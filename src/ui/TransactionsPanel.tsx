@@ -17,6 +17,7 @@ import { RuleOfferForm } from "./RuleOfferForm";
 import { CategoryOptions, type CategoryTree } from "./CategoryOptions";
 import { TransactionEditForm } from "./TransactionEditForm";
 import { TransactionFilters } from "./TransactionFilters";
+import { TransferCandidates } from "./TransferCandidates";
 import { TransferMarkForm } from "./TransferMarkForm";
 import { todayISO } from "./labels";
 
@@ -425,6 +426,8 @@ export function TransactionsPanel() {
         </button>
         {error && <p className="col-span-2 text-xs text-red-600">{error}</p>}
       </form>
+
+      <TransferCandidates />
 
       <TransactionFilters
         filter={filter}

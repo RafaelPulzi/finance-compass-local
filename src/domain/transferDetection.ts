@@ -1,5 +1,13 @@
+import type { CommandOutcome } from "./command";
 import type { Centavos } from "./money";
-import type { Id, ISODate, Transaction, Vault } from "./types";
+import type {
+  Id,
+  ISODate,
+  ImportedEntry,
+  Transaction,
+  TransferTransaction,
+  Vault,
+} from "./types";
 
 /**
  * Finding the two sides of one Transfer among imported entries.
@@ -150,4 +158,105 @@ export function findTransferCandidates(vault: Vault): TransferCandidate[] {
     candidates.push(candidate);
   }
   return candidates;
+}
+
+// --- The user's verdict on a pair -------------------------------------------
+
+/**
+ * The Vault with a candidate pair accepted: the two entries become one
+ * Transfer, replaced rather than kept alongside it (ADR-0006) — counting the
+ * same money as an Expense, an Income *and* a move would be three answers to
+ * one event.
+ *
+ * This is the one conversion that cannot keep an id: two Transactions become
+ * one, so the Transfer gets a new id and both old rows go. It remembers the
+ * bank's id of each imported side (`recoveredFrom`), which is what stops the
+ * next Import of either Statement from re-adding the entries just converted.
+ *
+ * The Transfer takes the Expense's date — the day the money left — and its
+ * description, since the leaving side is the one the user has been reading as
+ * spending. Dismissals naming either entry go with them: they described
+ * Transactions that no longer exist.
+ */
+export function acceptTransferPair(
+  vault: Vault,
+  outgoingId: Id,
+  incomingId: Id,
+  newId: () => Id,
+): CommandOutcome {
+  const outgoing = vault.transactions.find((tx) => tx.id === outgoingId);
+  const incoming = vault.transactions.find((tx) => tx.id === incomingId);
+  if (outgoing === undefined || incoming === undefined) {
+    return { ok: false, message: "Transação não encontrada." };
+  }
+  if (outgoing.kind !== "expense" || incoming.kind !== "income") {
+    return { ok: false, message: "Um par é uma despesa e uma receita." };
+  }
+  if (outgoing.accountId === incoming.accountId) {
+    return { ok: false, message: "Os dois lançamentos estão na mesma conta." };
+  }
+  if (outgoing.amount !== incoming.amount) {
+    return { ok: false, message: "Os valores dos dois lançamentos são diferentes." };
+  }
+
+  const recoveredFrom: ImportedEntry[] = [];
+  if (outgoing.fitid !== undefined) {
+    recoveredFrom.push({ fitid: outgoing.fitid, accountId: outgoing.accountId });
+  }
+  if (incoming.fitid !== undefined) {
+    recoveredFrom.push({ fitid: incoming.fitid, accountId: incoming.accountId });
+  }
+
+  const transfer: TransferTransaction = {
+    id: newId(),
+    kind: "transfer",
+    date: outgoing.date,
+    amount: outgoing.amount,
+    description: outgoing.description,
+    fromAccountId: outgoing.accountId,
+    toAccountId: incoming.accountId,
+    ...(recoveredFrom.length === 0 ? {} : { recoveredFrom }),
+  };
+  const gone = new Set([outgoingId, incomingId]);
+  return {
+    ok: true,
+    vault: {
+      ...vault,
+      transactions: [...vault.transactions.filter((tx) => !gone.has(tx.id)), transfer],
+      dismissedTransferPairs: vault.dismissedTransferPairs.filter(
+        (pair) => !pair.transactionIds.some((id) => gone.has(id)),
+      ),
+    },
+  };
+}
+
+/**
+ * The Vault remembering that these two entries are not one Transfer, so the
+ * pair is never offered again and working through the list makes progress.
+ * Dismissing changes no Transaction, and dismissing the same pair twice — in
+ * either order — is the same single dismissal.
+ */
+export function dismissTransferPair(vault: Vault, a: Id, b: Id): CommandOutcome {
+  if (a === b) {
+    return { ok: false, message: "Um par são dois lançamentos diferentes." };
+  }
+  const exists = (id: Id) => vault.transactions.some((tx) => tx.id === id);
+  if (!exists(a) || !exists(b)) {
+    return { ok: false, message: "Transação não encontrada." };
+  }
+  const key = pairKey(a, b);
+  const already = vault.dismissedTransferPairs.some(
+    (pair) => pairKey(pair.transactionIds[0], pair.transactionIds[1]) === key,
+  );
+  if (already) return { ok: true, vault };
+  return {
+    ok: true,
+    vault: {
+      ...vault,
+      dismissedTransferPairs: [
+        ...vault.dismissedTransferPairs,
+        { transactionIds: [a, b] },
+      ],
+    },
+  };
 }

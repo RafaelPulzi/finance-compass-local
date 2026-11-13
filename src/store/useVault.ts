@@ -15,6 +15,7 @@ import type { ImportPlan } from "../domain/statementImport";
 import * as txCreate from "../domain/transactionCreate";
 import * as txEdit from "../domain/transactionEdit";
 import type { TransactionEdit } from "../domain/transactionEdit";
+import * as detection from "../domain/transferDetection";
 import * as recovery from "../domain/transferRecovery";
 import type { SkippedEntry } from "../domain/transferRecovery";
 import type {
@@ -216,6 +217,14 @@ interface VaultState {
    * Statement would add the entry all over again.
    */
   revertTransferToEntry: (transferId: Id) => TransactionEditResult;
+  /**
+   * Accept a candidate pair: the Expense and the Income become one Transfer,
+   * replaced rather than kept alongside it (ADR-0006), remembering each side's
+   * bank id so a re-import adds nothing back.
+   */
+  acceptTransferPair: (outgoingId: Id, incomingId: Id) => ActionResult;
+  /** Say no to a candidate pair, so it is never offered again. */
+  dismissTransferPair: (a: Id, b: Id) => ActionResult;
 }
 
 /**
@@ -494,6 +503,14 @@ export const useVault = create<VaultState>((set, get) => {
 
     revertTransferToEntry(transferId) {
       return run((v) => recovery.undoMarking(v, transferId));
+    },
+
+    acceptTransferPair(outgoingId, incomingId) {
+      return run((v) => detection.acceptTransferPair(v, outgoingId, incomingId, newId));
+    },
+
+    dismissTransferPair(a, b) {
+      return run((v) => detection.dismissTransferPair(v, a, b));
     },
   };
 });

@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { centavos } from "./money";
+import { planImport } from "./statementImport";
 import {
   TRANSFER_WINDOW_DAYS,
+  acceptTransferPair,
+  dismissTransferPair,
   findTransferCandidates,
 } from "./transferDetection";
 import type { Transaction, Vault } from "./types";
@@ -293,5 +296,129 @@ describe("findTransferCandidates", () => {
     const again = pairs(vaultOf([...transactions].reverse()));
 
     expect(again).toEqual(first);
+  });
+});
+
+describe("acceptTransferPair", () => {
+  const newId = () => "tr-new";
+
+  it("replaces the two entries with one Transfer, remembering both bank ids", () => {
+    const vault = vaultOf([
+      { ...expense("e1", "2026-10-07", 50000), fitid: "f-e1" } as Transaction,
+      { ...income("i1", "2026-10-08", 50000), fitid: "f-i1" } as Transaction,
+      expense("e-other", "2026-10-01", 123),
+    ]);
+
+    const outcome = acceptTransferPair(vault, "e1", "i1", newId);
+    if (!outcome.ok) throw new Error(outcome.message);
+    expect(outcome.vault.transactions.map((tx) => tx.id)).toEqual(["e-other", "tr-new"]);
+    expect(outcome.vault.transactions[1]).toMatchObject({
+      kind: "transfer",
+      // The Expense's date and description: the day and the words the money left with.
+      date: "2026-10-07",
+      description: "saída e1",
+      amount: centavos(50000),
+      fromAccountId: CHECKING,
+      toAccountId: SAVINGS,
+      recoveredFrom: [
+        { fitid: "f-e1", accountId: CHECKING },
+        { fitid: "f-i1", accountId: SAVINGS },
+      ],
+    });
+  });
+
+  it("records no recoveredFrom when neither side was imported", () => {
+    const vault = vaultOf([
+      expense("e1", "2026-10-07", 50000),
+      income("i1", "2026-10-07", 50000),
+    ]);
+    const outcome = acceptTransferPair(vault, "e1", "i1", newId);
+    if (!outcome.ok) throw new Error(outcome.message);
+    expect(outcome.vault.transactions[0]).not.toHaveProperty("recoveredFrom");
+  });
+
+  it("drops dismissals that named either converted entry", () => {
+    const vault = vaultOf(
+      [
+        expense("e1", "2026-10-07", 50000),
+        income("i1", "2026-10-07", 50000),
+        income("i2", "2026-10-07", 50000, CARD),
+      ],
+      [{ transactionIds: ["e1", "i2"] }],
+    );
+    const outcome = acceptTransferPair(vault, "e1", "i1", newId);
+    if (!outcome.ok) throw new Error(outcome.message);
+    expect(outcome.vault.dismissedTransferPairs).toEqual([]);
+  });
+
+  it("refuses a pair that is not an Expense and an Income", () => {
+    const vault = vaultOf([
+      expense("e1", "2026-10-07", 50000),
+      expense("e2", "2026-10-07", 50000, SAVINGS),
+    ]);
+    expect(acceptTransferPair(vault, "e1", "e2", newId).ok).toBe(false);
+  });
+
+  it("refuses a same-account or unequal-amount pair, and a missing Transaction", () => {
+    const sameAccount = vaultOf([
+      expense("e1", "2026-10-07", 50000),
+      income("i1", "2026-10-07", 50000, CHECKING),
+    ]);
+    expect(acceptTransferPair(sameAccount, "e1", "i1", newId).ok).toBe(false);
+
+    const unequal = vaultOf([
+      expense("e1", "2026-10-07", 50000),
+      income("i1", "2026-10-07", 49900),
+    ]);
+    expect(acceptTransferPair(unequal, "e1", "i1", newId).ok).toBe(false);
+
+    expect(acceptTransferPair(unequal, "e1", "ghost", newId).ok).toBe(false);
+  });
+
+  it("a re-import of either Statement skips the converted entries", () => {
+    const vault = vaultOf([
+      { ...expense("e1", "2026-10-07", 50000), fitid: "f-e1" } as Transaction,
+      { ...income("i1", "2026-10-08", 50000), fitid: "f-i1" } as Transaction,
+    ]);
+    const outcome = acceptTransferPair(vault, "e1", "i1", newId);
+    if (!outcome.ok) throw new Error(outcome.message);
+
+    const plan = planImport(
+      [{ fitid: "f-e1", trntype: "DEBIT", date: "2026-10-07", amount: -500, description: "saída e1" }],
+      CHECKING,
+      outcome.vault.transactions,
+    );
+    expect(plan.additions).toEqual([]);
+    expect(plan.duplicates).toHaveLength(1);
+  });
+});
+
+describe("dismissTransferPair", () => {
+  it("remembers the pair so it is never offered again", () => {
+    const vault = vaultOf([
+      expense("e1", "2026-10-07", 50000),
+      income("i1", "2026-10-07", 50000),
+    ]);
+    expect(pairs(vault)).toEqual(["e1/i1"]);
+
+    const outcome = dismissTransferPair(vault, "e1", "i1");
+    if (!outcome.ok) throw new Error(outcome.message);
+    expect(outcome.vault.transactions).toBe(vault.transactions);
+    expect(pairs(outcome.vault)).toEqual([]);
+  });
+
+  it("is idempotent, in either order", () => {
+    const vault = vaultOf(
+      [expense("e1", "2026-10-07", 50000), income("i1", "2026-10-07", 50000)],
+      [{ transactionIds: ["i1", "e1"] }],
+    );
+    const outcome = dismissTransferPair(vault, "e1", "i1");
+    expect(outcome.ok && outcome.vault).toBe(vault);
+  });
+
+  it("refuses a pair of one Transaction, or one that does not exist", () => {
+    const vault = vaultOf([expense("e1", "2026-10-07", 50000)]);
+    expect(dismissTransferPair(vault, "e1", "e1").ok).toBe(false);
+    expect(dismissTransferPair(vault, "e1", "ghost").ok).toBe(false);
   });
 });

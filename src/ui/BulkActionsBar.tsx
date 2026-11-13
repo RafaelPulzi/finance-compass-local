@@ -1,15 +1,8 @@
 import { useState } from "react";
-import { type Centavos, formatBRL } from "../domain/money";
-import type { Account } from "../domain/types";
+import { formatBRL } from "../domain/money";
+import type { MarkingPreview } from "../domain/selection";
+import type { Account, Id } from "../domain/types";
 import { CategoryOptions, type CategoryTree } from "./CategoryOptions";
-
-/** What the selection would do to the balance of whichever Account is chosen. */
-export interface SelectionTotals {
-  /** Sum of the selected Expenses: money that left, so it arrives in the other Account. */
-  outgoing: Centavos;
-  /** Sum of the selected Incomes: money that arrived, so it left the other Account. */
-  incoming: Centavos;
-}
 
 interface Props {
   selectedCount: number;
@@ -22,7 +15,12 @@ interface Props {
   kind: "income" | "expense" | "mixed";
   tree: CategoryTree;
   accounts: readonly Account[];
-  totals: SelectionTotals;
+  /**
+   * What marking the selection against one Account would actually do, decided
+   * by the same domain function the confirmation runs — so the warning can
+   * never promise a balance change the conversion then doesn't make.
+   */
+  previewFor: (otherAccountId: Id) => MarkingPreview;
   onAssign: (categoryId: string) => void;
   onMarkTransfers: (otherAccountId: string) => void;
   onClear: () => void;
@@ -43,13 +41,14 @@ export function BulkActionsBar({
   kind,
   tree,
   accounts,
-  totals,
+  previewFor,
   onAssign,
   onMarkTransfers,
   onClear,
 }: Props) {
   const [otherAccountId, setOtherAccountId] = useState("");
   const chosen = accounts.find((a) => a.id === otherAccountId);
+  const preview = chosen === undefined ? null : previewFor(chosen.id);
 
   return (
     <div className="mb-3 space-y-2 rounded-md border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm dark:border-emerald-800 dark:bg-emerald-950">
@@ -104,36 +103,39 @@ export function BulkActionsBar({
 
         {/* Only once an Account is chosen, so the warning can name it and the
             amounts instead of warning in the abstract. */}
-        {chosen !== undefined && (
+        {chosen !== undefined && preview !== null && (
           <>
             <button
               type="button"
-              className="rounded-md bg-slate-700 px-3 py-1 text-xs font-medium text-white hover:bg-slate-800"
+              className="rounded-md bg-slate-700 px-3 py-1 text-xs font-medium text-white hover:bg-slate-800 disabled:opacity-40"
+              disabled={preview.converts === 0}
               onClick={() => {
                 onMarkTransfers(chosen.id);
                 setOtherAccountId("");
               }}
             >
-              Confirmar {selectedCount} transferência
-              {selectedCount === 1 ? "" : "s"}
+              Confirmar {preview.converts} transferência
+              {preview.converts === 1 ? "" : "s"}
             </button>
             <p className="w-full text-xs text-emerald-900 dark:text-emerald-200">
               Esses valores deixam de contar como receita ou despesa. O saldo de{" "}
               {chosen.name}
-              {totals.outgoing > 0 && (
+              {preview.arrives > 0 && (
                 <>
                   {" "}
-                  aumenta <span className="font-mono">{formatBRL(totals.outgoing)}</span>
+                  aumenta <span className="font-mono">{formatBRL(preview.arrives)}</span>
                 </>
               )}
-              {totals.outgoing > 0 && totals.incoming > 0 && " e"}
-              {totals.incoming > 0 && (
+              {preview.arrives > 0 && preview.leaves > 0 && " e"}
+              {preview.leaves > 0 && (
                 <>
                   {" "}
-                  diminui <span className="font-mono">{formatBRL(totals.incoming)}</span>
+                  diminui <span className="font-mono">{formatBRL(preview.leaves)}</span>
                 </>
               )}
-              . Lançamentos que já estão nessa conta são ignorados.
+              {preview.arrives === 0 && preview.leaves === 0 && " não muda"}.
+              {preview.skipped > 0 &&
+                ` ${preview.skipped === 1 ? "1 lançamento da seleção será ignorado" : `${preview.skipped} lançamentos da seleção serão ignorados`} — já está${preview.skipped === 1 ? "" : "ão"} nessa conta ou já ${preview.skipped === 1 ? "é" : "são"} transferência.`}
             </p>
           </>
         )}

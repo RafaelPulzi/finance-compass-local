@@ -1,18 +1,21 @@
 import { type FormEvent, useMemo, useState } from "react";
-import { categoryKind, categoryTree, treeHas } from "../domain/categories";
+import { categoryTree, treeHas } from "../domain/categories";
 import { suggestCategories } from "../domain/categorySuggestions";
-import { normalizedPattern, suggestedPattern } from "../domain/classificationRules";
+import { ruleOfferFor } from "../domain/classificationRules";
 import { formatDateBR } from "../domain/dates";
 import { formatBRL, parseBRL } from "../domain/money";
+import { markingPreview, selectedDescriptions, selectedKind } from "../domain/selection";
 import {
   NO_FILTER,
   type TransactionFilter,
   monthsWithTransactions,
   selectTransactions,
+  uncategorizedCount,
 } from "../domain/transactionQuery";
+import { canUndoMarking } from "../domain/transferRecovery";
 import type { Id, Transaction } from "../domain/types";
 import { useVault } from "../store/useVault";
-import { BulkActionsBar, type SelectionTotals } from "./BulkActionsBar";
+import { BulkActionsBar } from "./BulkActionsBar";
 import { RuleOfferForm } from "./RuleOfferForm";
 import { CategoryOptions, type CategoryTree } from "./CategoryOptions";
 import { TransactionEditForm } from "./TransactionEditForm";
@@ -173,63 +176,18 @@ export function TransactionsPanel() {
   const allSelected =
     selectableIds.length > 0 && selectableIds.every((id) => selected.has(id));
 
-  /**
-   * The kind every selected Transaction shares, or "mixed" when the selection
-   * spans both — income and expense Categories are separate, so a mixed
-   * selection has no Category that could apply to all of it.
-   */
-  const selectedKind = useMemo(() => {
-    let kind: "income" | "expense" | null = null;
-    for (const tx of vault.transactions) {
-      if (tx.kind === "transfer" || !selected.has(tx.id)) continue;
-      if (kind === null) kind = tx.kind;
-      else if (kind !== tx.kind) return "mixed" as const;
-    }
-    return kind;
-  }, [vault.transactions, selected]);
-
-  /**
-   * What marking the selection would move, split by direction: the Expenses
-   * arrive in the other Account and the Incomes leave it. Both sums are needed
-   * because a selection may hold either or both.
-   */
-  const selectedTotals = useMemo<SelectionTotals>(() => {
-    let outgoing = 0;
-    let incoming = 0;
-    for (const tx of vault.transactions) {
-      if (tx.kind === "transfer" || !selected.has(tx.id)) continue;
-      if (tx.kind === "expense") outgoing += tx.amount;
-      else incoming += tx.amount;
-    }
-    return { outgoing, incoming } as SelectionTotals;
-  }, [vault.transactions, selected]);
+  /** The selection's shared kind, answered by the domain (see domain/selection). */
+  const kindOfSelection = useMemo(() => selectedKind(vault, selected), [vault, selected]);
 
   function assignToSelected(categoryId: Id) {
     // Read the descriptions before the selection is cleared: they are what the
     // offered Rule is guessed from.
-    const descriptions = vault.transactions
-      .filter((tx) => tx.kind !== "transfer" && selected.has(tx.id))
-      .map((tx) => tx.description);
+    const descriptions = selectedDescriptions(vault, selected);
 
     setTransactionCategoryMany([...selected], categoryId);
     setSelected(new Set());
     setBulkNotice(null);
-    setRuleOffer(offerFor(descriptions, categoryId));
-  }
-
-  /**
-   * The Rule worth offering for work just done by hand, or null when there is
-   * none: no shared pattern to guess from, or a Rule that already says this.
-   */
-  function offerFor(descriptions: readonly string[], categoryId: Id) {
-    const suggested = suggestedPattern(descriptions);
-    if (suggested === null) return null;
-    const kind = categoryKind(vault, categoryId);
-    if (kind === undefined) return null;
-    const known = vault.rules.some(
-      (rule) => rule.kind === kind && normalizedPattern(rule.pattern) === suggested,
-    );
-    return known ? null : { pattern: suggested, categoryId };
+    setRuleOffer(ruleOfferFor(vault, descriptions, categoryId));
   }
 
   function acceptRuleOffer(pattern: string) {
@@ -267,9 +225,7 @@ export function TransactionsPanel() {
     setSelected(new Set());
   }
 
-  const uncategorizedCount = vault.transactions.filter(
-    (tx) => tx.kind !== "transfer" && tx.categoryId === null,
-  ).length;
+  const pendingCategories = uncategorizedCount(vault);
 
   /**
    * What the user's own frequent decisions suggest for the backlog: by
@@ -329,10 +285,10 @@ export function TransactionsPanel() {
         <h2 className="text-lg font-semibold text-slate-800 dark:text-slate-100">
           Transações
         </h2>
-        {uncategorizedCount > 0 && (
+        {pendingCategories > 0 && (
           <span className="flex items-center gap-2">
             <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-300">
-              {uncategorizedCount} sem categoria
+              {pendingCategories} sem categoria
             </span>
             {suggestionFor.size > 0 && (
               <button
@@ -462,13 +418,13 @@ export function TransactionsPanel() {
         </label>
       )}
 
-      {selected.size > 0 && selectedKind !== null && (
+      {selected.size > 0 && kindOfSelection !== null && (
         <BulkActionsBar
           selectedCount={selected.size}
-          kind={selectedKind}
-          tree={selectedKind === "mixed" ? [] : treesByKind[selectedKind]}
+          kind={kindOfSelection}
+          tree={kindOfSelection === "mixed" ? [] : treesByKind[kindOfSelection]}
           accounts={vault.accounts}
-          totals={selectedTotals}
+          previewFor={(otherAccountId) => markingPreview(vault, [...selected], otherAccountId)}
           onAssign={assignToSelected}
           onMarkTransfers={markSelectedAsTransfers}
           onClear={() => setSelected(new Set())}
@@ -644,7 +600,7 @@ export function TransactionsPanel() {
                 // Only a Transfer recovered from a single imported entry knows
                 // what to go back to; one the user typed has no earlier entry,
                 // and one recovered from both sides belongs to the pair list.
-                tx.recoveredFrom?.length === 1 && (
+                canUndoMarking(tx) && (
                   <button
                     type="button"
                     aria-label={`Desfazer transferência ${tx.description || "sem descrição"}`}

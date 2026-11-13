@@ -259,6 +259,22 @@ export function markAllAsTransfers(
   };
 }
 
+/**
+ * Whether "desfazer" has anything to restore: only a Transfer recovered from a
+ * single imported entry that still names one of its own sides. A Transfer the
+ * user typed in has no earlier entry, and one recovered from both sides belongs
+ * to the pair list. This is `entryFromTransfer`'s own answer, exported so the
+ * page showing the button and the command behind it cannot disagree — and so
+ * the page stops reading `recoveredFrom` for itself.
+ */
+export function canUndoMarking(tx: Transaction): boolean {
+  if (tx.kind !== "transfer") return false;
+  const recovered = tx.recoveredFrom ?? [];
+  if (recovered.length !== 1) return false;
+  const [entry] = recovered;
+  return entry.accountId === tx.fromAccountId || entry.accountId === tx.toAccountId;
+}
+
 /** The Vault with a marking undone: the Transfer is its imported entry again. */
 export function undoMarking(vault: Vault, transferId: Id): CommandOutcome {
   const outcome = entryFromTransfer(vault, transferId);

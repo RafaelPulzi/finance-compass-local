@@ -244,6 +244,32 @@ function worthProposing(run: string): boolean {
   return run.length >= 3 && /[a-z]/.test(run);
 }
 
+/**
+ * The Rule worth offering for classification just done by hand, or null when
+ * there is none: no shared pattern to guess from, a Category the Vault doesn't
+ * have, or a Rule that already says this.
+ *
+ * "Already says this" compares token runs on both sides — the same shape
+ * `suggestedPattern` produces — so a Rule stored as `IFOOD *IFOOD` counts as
+ * knowing the suggestion `ifood ifood`. Comparing the raw normalised pattern
+ * instead kept punctuation, and the offer proposed near-duplicates of Rules
+ * the user already had.
+ */
+export function ruleOfferFor(
+  vault: Vault,
+  descriptions: readonly string[],
+  categoryId: Id,
+): { pattern: string; categoryId: Id } | null {
+  const suggested = suggestedPattern(descriptions);
+  if (suggested === null) return null;
+  const kind = categoryKind(vault, categoryId);
+  if (kind === undefined) return null;
+  const known = vault.rules.some(
+    (rule) => rule.kind === kind && tokensOf(rule.pattern).join(" ") === suggested,
+  );
+  return known ? null : { pattern: suggested, categoryId };
+}
+
 // --- Changing the Rules ---------------------------------------------------
 
 /**

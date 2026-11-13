@@ -989,6 +989,34 @@ describe("marking a whole selection as Transfers", () => {
     expect(screen.queryByLabelText("Outra conta das transferências")).not.toBeInTheDocument();
   });
 
+  it("previews only what will convert, leaving out entries already on the Account", async () => {
+    show({
+      ...vault,
+      transactions: [
+        ...vault.transactions,
+        // Already on the chosen Account: the conversion will skip it, so the
+        // promised balance change must not include its R$ 250,01.
+        expense("e3", "2026-10-05", 25001, "JA NA POUPANCA", null, SAVINGS),
+      ],
+    });
+    const user = userEvent.setup();
+    await user.click(screen.getByLabelText("Selecionar APLICACAO CDB 1"));
+    await user.click(screen.getByLabelText("Selecionar JA NA POUPANCA"));
+
+    await user.selectOptions(
+      screen.getByLabelText("Outra conta das transferências"),
+      "acc-savings",
+    );
+
+    const warning = plain(screen.getByText(/Esses valores deixam de contar/).textContent ?? "");
+    expect(warning).toContain("aumenta R$ 250,01");
+    expect(warning).not.toContain("R$ 500,02");
+    expect(warning).toContain("1 lançamento da seleção será ignorado");
+    expect(
+      screen.getByRole("button", { name: /Confirmar 1 transferência/ }),
+    ).toBeInTheDocument();
+  });
+
   it("names what it skipped instead of counting it as converted", async () => {
     show({
       ...vault,

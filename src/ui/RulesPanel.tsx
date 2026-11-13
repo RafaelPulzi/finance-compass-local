@@ -1,5 +1,6 @@
 import { type FormEvent, useMemo, useState } from "react";
 import { categoryTree } from "../domain/categories";
+import { uncategorizedCount } from "../domain/transactionQuery";
 import {
   pendingRuleCount,
   ruleMatchCounts,
@@ -107,9 +108,7 @@ export function RulesPanel() {
     });
   }
 
-  const uncategorized = vault.transactions.filter(
-    (tx) => tx.kind !== "transfer" && tx.categoryId === null,
-  ).length;
+  const uncategorized = uncategorizedCount(vault);
 
   return (
     <section className="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-700 dark:bg-slate-800">

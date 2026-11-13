@@ -16,3 +16,13 @@ export function normalizeForSearch(text: string): string {
     .replace(/[̀-ͯ]/g, "")
     .toLowerCase();
 }
+
+/**
+ * A user-given name, trimmed and with runs of spaces collapsed; null when
+ * nothing is left. Account and Category names both go through this, so the two
+ * kinds of name can never diverge in how they are cleaned.
+ */
+export function cleanName(name: string): string | null {
+  const cleaned = name.trim().replace(/\s+/g, " ");
+  return cleaned === "" ? null : cleaned;
+}

@@ -1,5 +1,5 @@
 import type { CommandOutcome } from "./command";
-import { normalizeForSearch } from "./text";
+import { cleanName, normalizeForSearch } from "./text";
 import type { Category, CategoryKind, Group, Id, Vault } from "./types";
 import { isBudgeted } from "./types";
 
@@ -28,6 +28,8 @@ export function categoryKind(vault: Vault, categoryId: Id): CategoryKind | undef
 export interface CategoryUsage {
   transactions: number;
   budgets: number;
+  /** Rules that would assign this Category; a dangling one would classify new imports into a Category that no longer exists. */
+  rules: number;
 }
 
 /** What still points at a Category, which is what stops it being deleted. */
@@ -41,7 +43,11 @@ export function categoryUsage(vault: Vault, categoryId: Id): CategoryUsage {
   const budgets = vault.budgets.filter(
     (b) => b.categoryId === categoryId && isBudgeted(b),
   ).length;
-  return { transactions, budgets };
+  // A Rule is a live writer, unlike a Transaction's ruleId, which is only a
+  // record: a surviving Rule would stamp the dead Category onto the next
+  // import, producing rows that count in no total and no backlog.
+  const rules = vault.rules.filter((r) => r.categoryId === categoryId).length;
+  return { transactions, budgets, rules };
 }
 
 /** Transaction counts for every Category at once, for a page listing them all. */
@@ -52,12 +58,6 @@ export function transactionCountByCategory(vault: Vault): Map<Id, number> {
     counts.set(tx.categoryId, (counts.get(tx.categoryId) ?? 0) + 1);
   }
   return counts;
-}
-
-/** Trimmed, with runs of spaces collapsed; null when nothing is left. */
-function cleanName(name: string): string | null {
-  const cleaned = name.trim().replace(/\s+/g, " ");
-  return cleaned === "" ? null : cleaned;
 }
 
 /** "Saúde" and "saude " are the same name to a person reading a list. */
@@ -185,10 +185,11 @@ export function deleteCategory(vault: Vault, categoryId: Id): VaultChange {
     return { ok: false, message: "Categoria inexistente." };
   }
   const usage = categoryUsage(vault, categoryId);
-  if (usage.transactions > 0 || usage.budgets > 0) {
+  if (usage.transactions > 0 || usage.budgets > 0 || usage.rules > 0) {
     const uses = [
       usage.transactions > 0 ? plural(usage.transactions, "transação", "transações") : null,
       usage.budgets > 0 ? plural(usage.budgets, "orçamento", "orçamentos") : null,
+      usage.rules > 0 ? plural(usage.rules, "regra", "regras") : null,
     ].filter((u): u is string => u !== null);
     return {
       ok: false,

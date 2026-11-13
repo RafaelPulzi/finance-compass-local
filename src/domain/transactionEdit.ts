@@ -81,6 +81,12 @@ export function deleteTransaction(vault: Vault, transactionId: Id): CommandOutco
     vault: {
       ...vault,
       transactions: vault.transactions.filter((tx) => tx.id !== transactionId),
+      // A dismissal names two live Transactions; one that names this one would
+      // sit in the vault files forever, matching nothing — a re-import gives
+      // the entry a new id — so it goes with the Transaction it described.
+      dismissedTransferPairs: vault.dismissedTransferPairs.filter(
+        (pair) => !pair.transactionIds.includes(transactionId),
+      ),
     },
   };
 }

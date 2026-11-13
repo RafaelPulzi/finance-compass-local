@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
+import { categoryUsage, deleteCategory } from "./categories";
 import {
   addRule,
   applyRules,
+  classifyAs,
   assignmentsFromRules,
   deleteRule,
   editRule,
@@ -372,5 +374,55 @@ describe("adding, editing, reordering and deleting a Rule", () => {
     });
     expect(moveRule(base, "r-nope", 1)).toEqual({ ok: false, message });
     expect(deleteRule(base, "r-nope")).toEqual({ ok: false, message });
+  });
+});
+
+describe("review fixes", () => {
+  it("suggestedPattern only offers what the resulting Rule would actually match", () => {
+    // Tokens join with spaces, but the bank writes "IFOOD *IFOOD": a proposal
+    // of "ifood ifood com agen" would be a dead Rule made by the app's own offer.
+    const descriptions = ["IFOOD *IFOOD COM AGEN", "IFOOD *IFOOD COM AGEN2"];
+    const suggested = suggestedPattern(descriptions);
+    expect(suggested).not.toBeNull();
+    const offered = rule({ pattern: suggested as string });
+    for (const description of descriptions) {
+      expect(ruleMatches(offered, description)).toBe(true);
+    }
+  });
+
+  it("suggestedPattern does not read a run across another description's token boundary", () => {
+    // "xa bc" contains the substring "a b", but a Rule "a b" must then match it
+    // too — the offer and the match agree because both are literal substrings.
+    const suggested = suggestedPattern(["PIX LUIZA B SILVA", "POSTO XLUIZA BARAO"]);
+    if (suggested !== null) {
+      const offered = rule({ pattern: suggested });
+      expect(ruleMatches(offered, "PIX LUIZA B SILVA")).toBe(true);
+      expect(ruleMatches(offered, "POSTO XLUIZA BARAO")).toBe(true);
+    }
+  });
+
+  it("classifyAs drops the ruleId even when the user re-chooses the same Category", () => {
+    // Confirming a Rule's verdict by hand is still the user speaking (ADR-0008).
+    const vault = {
+      ...base,
+      rules: [rule()],
+      transactions: [tx({ categoryId: "cat-restaurant", ruleId: "r-1" })],
+    };
+    const outcome = classifyAs(vault, ["tx-1"], "cat-restaurant");
+    if (!outcome.ok) throw new Error(outcome.message);
+    expect(outcome.changed).toBe(1);
+    const next = outcome.vault.transactions[0];
+    expect(next.kind !== "transfer" && next.categoryId).toBe("cat-restaurant");
+    expect(next.kind !== "transfer" && next.ruleId).toBeUndefined();
+  });
+
+  it("deleting a Category is refused while a Rule would still assign it", () => {
+    // A surviving Rule would stamp the dead Category onto the next import,
+    // producing rows in no total and no backlog. Refused, never cascaded.
+    const vault = { ...base, rules: [rule()] };
+    expect(categoryUsage(vault, "cat-restaurant").rules).toBe(1);
+    const outcome = deleteCategory(vault, "cat-restaurant");
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) expect(outcome.message).toContain("1 regra");
   });
 });

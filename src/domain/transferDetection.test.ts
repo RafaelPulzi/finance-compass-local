@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { centavos } from "./money";
 import { planImport } from "./statementImport";
+import { deleteTransaction } from "./transactionEdit";
 import {
   TRANSFER_WINDOW_DAYS,
   acceptTransferPair,
@@ -420,5 +421,18 @@ describe("dismissTransferPair", () => {
     const vault = vaultOf([expense("e1", "2026-10-07", 50000)]);
     expect(dismissTransferPair(vault, "e1", "e1").ok).toBe(false);
     expect(dismissTransferPair(vault, "e1", "ghost").ok).toBe(false);
+  });
+});
+
+describe("deleting a Transaction named by a dismissal", () => {
+  it("removes the dismissal with it: a re-imported entry gets a new id, so the row could never match again", () => {
+    const vault = vaultOf(
+      [expense("e1", "2026-10-07", 50000), income("i1", "2026-10-07", 50000)],
+      [{ transactionIds: ["e1", "i1"] }],
+    );
+    const outcome = deleteTransaction(vault, "e1");
+    if (!outcome.ok) throw new Error(outcome.message);
+    expect(outcome.vault.transactions.map((tx) => tx.id)).toEqual(["i1"]);
+    expect(outcome.vault.dismissedTransferPairs).toEqual([]);
   });
 });

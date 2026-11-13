@@ -86,9 +86,9 @@ describe("categoryKind and usage", () => {
   });
 
   it("counts what points at a Category", () => {
-    expect(categoryUsage(vault, "c-market")).toEqual({ transactions: 2, budgets: 0 });
-    expect(categoryUsage(vault, "c-resto")).toEqual({ transactions: 0, budgets: 1 });
-    expect(categoryUsage(vault, "c-unused")).toEqual({ transactions: 0, budgets: 0 });
+    expect(categoryUsage(vault, "c-market")).toEqual({ transactions: 2, budgets: 0, rules: 0 });
+    expect(categoryUsage(vault, "c-resto")).toEqual({ transactions: 0, budgets: 1, rules: 0 });
+    expect(categoryUsage(vault, "c-unused")).toEqual({ transactions: 0, budgets: 0, rules: 0 });
   });
 
   it("counts every Category at once, leaving Uncategorized out", () => {

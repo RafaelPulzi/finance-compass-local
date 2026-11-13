@@ -1,6 +1,6 @@
 import type { VaultChange } from "./categories";
 import type { Centavos } from "./money";
-import { normalizeForSearch } from "./text";
+import { cleanName, normalizeForSearch } from "./text";
 import type { Account, AccountType, Id, Transaction, Vault } from "./types";
 
 /**
@@ -19,11 +19,6 @@ export interface AccountInput {
   name: string;
   type: AccountType;
   openingBalance: Centavos;
-}
-
-function cleanName(name: string): string | null {
-  const cleaned = name.trim().replace(/\s+/g, " ");
-  return cleaned === "" ? null : cleaned;
 }
 
 /** Two Accounts both called "Inter" make every select and every Transfer ambiguous. */

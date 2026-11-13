@@ -69,14 +69,23 @@ export function assignmentsFromRules(
   if (rules.length === 0) return [];
   const assignments: RuleAssignment[] = [];
 
+  // Normalise each pattern once, not once per (transaction, rule) pair: this
+  // runs on every vault change while the Rules page is open, and NFD-decomposing
+  // 50 patterns against 5 000 descriptions is a quarter-million passes.
+  const prepared = rules.map((rule) => ({
+    rule,
+    pattern: normalizedPattern(rule.pattern),
+  }));
+
   for (const tx of transactions) {
     if (tx.kind === "transfer" || tx.categoryId !== null) continue;
-    for (const rule of rules) {
+    const description = normalizeForSearch(tx.description);
+    for (const { rule, pattern } of prepared) {
       // A Rule for Incomes has nothing to say about an Expense: the two sets of
       // Categories are separate, so the wrong kind is not a weaker match but no
       // match at all.
       if (rule.kind !== tx.kind) continue;
-      if (!ruleMatches(rule, tx.description)) continue;
+      if (pattern === "" || !description.includes(pattern)) continue;
       assignments.push({
         transactionId: tx.id,
         categoryId: rule.categoryId,
@@ -178,7 +187,11 @@ export function classifyAs(
   const wanted = new Set(transactionIds);
   let changed = 0;
   const transactions = vault.transactions.map((tx) => {
-    if (!wanted.has(tx.id) || tx.kind !== kind || tx.categoryId === categoryId) return tx;
+    if (!wanted.has(tx.id) || tx.kind !== kind) return tx;
+    // Re-choosing the Category a Rule had assigned is still the user speaking:
+    // the Category stays, but the Rule stops being the explanation for it —
+    // only a row with nothing to change at all is left untouched.
+    if (tx.categoryId === categoryId && tx.ruleId === undefined) return tx;
     changed += 1;
     const next = { ...tx, categoryId };
     delete next.ruleId;
@@ -225,13 +238,20 @@ function tokenRuns(tokens: readonly string[]): string[] {
  * because the user has to notice and undo it.
  */
 export function suggestedPattern(descriptions: readonly string[]): string | null {
-  const tokenised = descriptions.map(tokensOf).filter((tokens) => tokens.length > 0);
-  if (tokenised.length === 0) return null;
+  const withWords = descriptions.filter((d) => tokensOf(d).length > 0);
+  if (withWords.length === 0) return null;
 
-  const others = tokenised.slice(1);
-  for (const run of tokenRuns(tokenised[0])) {
+  // A run is only offered when it occurs *literally* in every normalised
+  // description — the same test `ruleMatches` will later run. Token runs join
+  // with single spaces while bank descriptions separate words with "*", "/" or
+  // "-", so a run that merely shares the words ("ifood ifood com agen" for
+  // "IFOOD *IFOOD COM AGEN") would become a Rule that matches nothing, created
+  // by the app's own offer. Checking the final substring also stops a run from
+  // "matching" across token boundaries in another description.
+  const normalized = withWords.map((d) => normalizeForSearch(d));
+  for (const run of tokenRuns(tokensOf(withWords[0]))) {
     if (!worthProposing(run)) continue;
-    if (others.every((tokens) => tokens.join(" ").includes(run))) return run;
+    if (normalized.every((text) => text.includes(run))) return run;
   }
   return null;
 }

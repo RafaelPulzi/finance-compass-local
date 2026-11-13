@@ -82,7 +82,7 @@ describe("setBudget", () => {
       ...base,
       budgets: [{ id: "b-1", categoryId: "cat-market", monthlyLimit: centavos(0) }],
     };
-    expect(categoryUsage(vault, "cat-market")).toEqual({ transactions: 0, budgets: 0 });
+    expect(categoryUsage(vault, "cat-market")).toEqual({ transactions: 0, budgets: 0, rules: 0 });
     expect(deleteCategory(vault, "cat-market").ok).toBe(true);
   });
 });

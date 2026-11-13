@@ -1,5 +1,5 @@
-import type { Vault } from "../domain/types";
-import { VAULT_SCHEMA_VERSION } from "../domain/types";
+import type { Vault, VaultCollection } from "../domain/types";
+import { VAULT_COLLECTIONS, VAULT_SCHEMA_VERSION, isBudgeted } from "../domain/types";
 
 /**
  * A place a Vault can be loaded from and saved to. The domain and UI never know
@@ -36,6 +36,9 @@ export interface VaultFolderPick {
  * v2 -> v3: a Transfer's `recoveredFrom` is absent, which is exactly right — a v2
  * Transfer was entered by hand and came from no Statement — and there are no
  * dismissed candidate pairs yet.
+ * v3 -> v4: there are no Rules, so no Transaction was classified by one; every
+ * Category in a v3 vault was assigned by hand, which is what a missing `ruleId`
+ * already says.
  * A vault written by a *newer* app version is refused rather than silently
  * half-read, so an unknown field can't be dropped on the next save.
  */
@@ -50,16 +53,36 @@ export function parseVault(raw: unknown): Vault {
       `Este cofre foi criado por uma versão mais nova do Finance Compass (schema ${version}).`,
     );
   }
+  // A collection absent in an older schema is simply empty (v3 had no Rules,
+  // v2 no dismissals); one that is present must be a list.
+  const collections = Object.fromEntries(
+    VAULT_COLLECTIONS.map((collection) => [
+      collection,
+      listOf<unknown>(stored[collection], collection),
+    ]),
+  ) as unknown as Pick<Vault, VaultCollection>;
   return {
     schemaVersion: VAULT_SCHEMA_VERSION,
-    accounts: stored.accounts ?? [],
-    groups: stored.groups ?? [],
-    categories: stored.categories ?? [],
-    transactions: stored.transactions ?? [],
-    budgets: stored.budgets ?? [],
-    imports: stored.imports ?? [],
-    dismissedTransferPairs: stored.dismissedTransferPairs ?? [],
+    ...collections,
+    // Older versions kept a `monthlyLimit: 0` row for "not budgeted"; now the
+    // row's absence says that, so legacy zero rows are scrubbed on the way in
+    // (they metered nothing, and they used to block deleting their Category).
+    budgets: collections.budgets.filter(isBudgeted),
   };
+}
+
+/**
+ * An entity list, or an empty one when the field is absent (an older schema).
+ * Anything else is refused at the door: the vault is plain files a person may
+ * edit by hand, and `{}` where a list belongs would otherwise load fine and
+ * crash the first screen that iterates it.
+ */
+function listOf<T>(value: T[] | undefined, field: string): T[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) {
+    throw new Error(`O cofre está inválido: "${field}" deveria ser uma lista.`);
+  }
+  return value;
 }
 
 /** True when running inside the Tauri desktop shell (vs. a plain browser dev server). */

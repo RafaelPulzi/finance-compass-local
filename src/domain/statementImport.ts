@@ -1,6 +1,8 @@
+import { applyRules } from "./classificationRules";
+import type { CommandOutcome } from "./command";
 import { centavos } from "./money";
 import type { OfxEntry } from "./ofx";
-import type { Id, Transaction } from "./types";
+import type { Id, ImportRecord, Transaction, Vault } from "./types";
 
 export interface ImportPlan {
   accountId: Id;
@@ -73,4 +75,51 @@ export function toTransactions(
     categoryId: null,
     fitid: entry.fitid,
   }));
+}
+
+/** The clock and the id generator an Import needs from the outside world. */
+export interface ImportContext {
+  newId: () => Id;
+  /** The moment the import ran, as an ISO timestamp. */
+  now: () => string;
+}
+
+/**
+ * The Vault with a planned Import applied: its new Transactions added and the
+ * Import recorded. The Rules run over the additions in the same mutation, so a
+ * routine month can arrive already classified — but `toTransactions` keeps
+ * producing Uncategorized entries and stays separately testable (ADR-0006), and
+ * an Import in a vault with no Rules behaves exactly as it did before. Only the
+ * additions are offered to the Rules; what was already in the vault is the
+ * backlog action's business, not this one's.
+ *
+ * Reports what the Import did so the panel can say whether there is work left:
+ * how many entries were added, and how many of them a Rule classified.
+ */
+export function commitImport(
+  vault: Vault,
+  input: { plan: ImportPlan; fileName: string },
+  ctx: ImportContext,
+): CommandOutcome<{ added: number; classified: number }> {
+  const { plan, fileName } = input;
+  const added = toTransactions(plan.additions, plan.accountId, ctx.newId);
+  const { transactions: classified, assignments } = applyRules(vault.rules, added);
+  const record: ImportRecord = {
+    id: ctx.newId(),
+    accountId: plan.accountId,
+    importedAt: ctx.now(),
+    fileName,
+    added: added.length,
+    skipped: plan.duplicates.length,
+  };
+  return {
+    ok: true,
+    vault: {
+      ...vault,
+      transactions: [...vault.transactions, ...classified],
+      imports: [...vault.imports, record],
+    },
+    added: added.length,
+    classified: assignments.length,
+  };
 }

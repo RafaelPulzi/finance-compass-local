@@ -201,3 +201,112 @@ describe("editedTransaction", () => {
     expect(JSON.stringify(vault)).toBe(before);
   });
 });
+
+describe("editedTransaction: dates and recovered Transfers", () => {
+  it("refuses a date with the right shape that does not exist", () => {
+    const outcome = editedTransaction(vault, "e1", { date: "2026-02-30" });
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) expect(outcome.message).toMatch(/data válida/);
+  });
+
+  /** The Vault with t1 recovered from an Expense imported on ACC. */
+  const recovered: Vault = {
+    ...vault,
+    accounts: [
+      ...vault.accounts,
+      { id: "acc-3", name: "CDB", type: "savings", openingBalance: centavos(0) },
+    ],
+    transactions: vault.transactions.map((tx) =>
+      tx.id === "t1" ? { ...tx, recoveredFrom: [{ fitid: "bank-t1", accountId: ACC }] } : tx,
+    ),
+  };
+
+  it("lets the user re-point the side they chose by hand", () => {
+    const outcome = editedTransaction(recovered, "t1", { toAccountId: "acc-3" });
+    if (!outcome.ok) throw new Error(outcome.message);
+    expect(outcome.transaction).toMatchObject({ fromAccountId: ACC, toAccountId: "acc-3" });
+    // The bank ids survive the edit, so a re-import still skips the entry.
+    expect(outcome.transaction).toHaveProperty("recoveredFrom", [{ fitid: "bank-t1", accountId: ACC }]);
+  });
+
+  it("refuses to move the side the bank's Statement recorded", () => {
+    const outcome = editedTransaction(recovered, "t1", { fromAccountId: "acc-3" });
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) expect(outcome.message).toMatch(/lançamento importado/);
+  });
+
+  it("refuses to swap the direction, which would contradict the Statement's sign", () => {
+    const outcome = editedTransaction(recovered, "t1", {
+      fromAccountId: SAVINGS,
+      toAccountId: ACC,
+    });
+    expect(outcome.ok).toBe(false);
+  });
+
+  it("still lets a hand-entered Transfer change both sides freely", () => {
+    const outcome = editedTransaction(vault, "t1", { fromAccountId: SAVINGS, toAccountId: ACC });
+    expect(outcome.ok).toBe(true);
+  });
+});
+
+describe("the Rule that classified a Transaction, across an edit", () => {
+  /** One Transaction a Rule classified, and a second expense Category to move it to. */
+  const withClassified = (): Vault => ({
+    ...vault,
+    categories: [
+      ...vault.categories,
+      { id: "cat-rest", name: "Restaurantes", groupId: "g-food" },
+    ],
+    transactions: [
+      {
+        id: "r1",
+        kind: "expense",
+        date: "2026-10-02",
+        amount: centavos(5000),
+        description: "IFOOD PEDIDO",
+        accountId: ACC,
+        categoryId: "cat-market",
+        ruleId: "rule-1",
+      },
+    ],
+  });
+
+  it("survives an edit that leaves the Category where it was", () => {
+    const outcome = editedTransaction(withClassified(), "r1", {
+      date: "2026-10-03",
+      description: "IFOOD PEDIDO 22",
+    });
+
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.transaction).toMatchObject({ ruleId: "rule-1" });
+  });
+
+  it("is dropped when the user chooses a different Category", () => {
+    const outcome = editedTransaction(withClassified(), "r1", {
+      categoryId: "cat-rest",
+    });
+
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.transaction).toMatchObject({ categoryId: "cat-rest" });
+    expect(outcome.transaction).not.toHaveProperty("ruleId");
+  });
+
+  it("is dropped when the Category is cleared", () => {
+    const outcome = editedTransaction(withClassified(), "r1", { categoryId: null });
+
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.transaction).not.toHaveProperty("ruleId");
+  });
+
+  it("is dropped when a kind flip drops the Category with it", () => {
+    const outcome = editedTransaction(withClassified(), "r1", { kind: "income" });
+
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.transaction).toMatchObject({ kind: "income", categoryId: null });
+    expect(outcome.transaction).not.toHaveProperty("ruleId");
+  });
+});

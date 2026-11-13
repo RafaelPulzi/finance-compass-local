@@ -37,6 +37,14 @@ The state of an Income or Expense Transaction that has no Category yet. Every im
 A named collection of Categories (e.g. "Food" containing "Groceries" and "Restaurants"). Categories are organised two levels deep: Group → Category, no deeper.
 _Avoid_: Parent category, folder
 
+**Rule**:
+A user-authored mapping from a description pattern to a Category, applied only to Uncategorized Transactions — at Import, and on demand over the ones already there. The pattern is plain text the description must contain, compared with case and accents ignored, never a regular expression. Rules are tried in the user's own order and the first match decides. A Rule never changes a Category the user set by hand (ADR-0008), and a Transaction remembers which Rule classified it.
+_Avoid_: Filter (the Transactions page's own concept), auto-category, classifier
+
+**Suggestion**:
+The Category an Uncategorized Transaction is offered because the user has already filed that same description (numbers ignored) under it, by hand, at least twice — a habit read off their own decisions, where a Rule is something they wrote. A Suggestion is offered, never imposed: the user accepts one per row or applies them all at once, and like a Rule it only ever fills a gap, never changing a Category someone set. A disagreement between the user's own decisions with no clear winner produces no Suggestion. What a Rule classified is not evidence of a habit; only hand decisions are.
+_Avoid_: Auto-category, prediction, guess
+
 **Budget**:
 A monthly spending limit set for a single expense Category (e.g. Groceries = R$800/month). The app compares the calendar month's actual Expenses in that Category against the limit. Unspent amounts do not roll over to the next month.
 _Avoid_: Allowance, cap, envelope
@@ -67,7 +75,7 @@ The imported entries a Transfer was built out of, each remembered as the bank's 
 _Avoid_: Sources (a Transfer's *source* is its origin Account), origins
 
 **Marking**:
-Naming, by hand, the Account on the other side of a single imported entry, which turns that entry into a Transfer. Needed when only one leg was ever imported — money moving to somewhere no Statement covers — so no candidate pair can exist. The entry is *replaced*, not kept alongside the Transfer, and its direction comes from its own sign rather than from the user. Marking is the one conversion that moves a balance: the chosen Account was not tracking that money before.
+Naming, by hand, the Account on the other side of one or more imported entries, which turns each of them into a Transfer. A whole selection can be marked against the same other Account at once — a real Statement holds hundreds of the same internal move, and the same judgement repeated is still one judgement. Each entry is decided on its own, so a selection mixing Expenses and Incomes is fine; an entry that cannot convert is skipped and reported rather than failing the rest. Needed when only one leg was ever imported — money moving to somewhere no Statement covers — so no candidate pair can exist. The entry is *replaced*, not kept alongside the Transfer, and its direction comes from its own sign rather than from the user. Marking is the one conversion that moves a balance: the chosen Account was not tracking that money before.
 _Avoid_: Linking, assigning, converting to transfer
 
 **Undoing a marking**:

@@ -31,6 +31,10 @@
     {
       "identifier": "fs:allow-write-text-file",
       "allow": [{ "path": "$APPDATA/settings.json" }, { "path": "$APPDATA/vault/**" }]
+    },
+    {
+      "identifier": "fs:allow-rename",
+      "allow": [{ "path": "$APPDATA/vault/**" }]
     }
   ]
 }

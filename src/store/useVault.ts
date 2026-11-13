@@ -1,39 +1,66 @@
 import { create } from "zustand";
+import * as accountRules from "../domain/accounts";
+import type { AccountInput } from "../domain/accounts";
+import * as budgetRules from "../domain/budgets";
+import * as categoryRules from "../domain/categories";
+import * as suggestions from "../domain/categorySuggestions";
+import * as classification from "../domain/classificationRules";
+import type { RuleInput } from "../domain/classificationRules";
+import type { CommandOutcome } from "../domain/command";
 import { newId } from "../domain/id";
 import type { Centavos } from "../domain/money";
 import { seedVault } from "../domain/seed";
-import { type ImportPlan, toTransactions } from "../domain/statementImport";
-import { type TransactionEdit, editedTransaction } from "../domain/transactionEdit";
-import { entryFromTransfer, transferFromEntry } from "../domain/transferRecovery";
+import * as statementImport from "../domain/statementImport";
+import type { ImportPlan } from "../domain/statementImport";
+import * as txCreate from "../domain/transactionCreate";
+import * as txEdit from "../domain/transactionEdit";
+import type { TransactionEdit } from "../domain/transactionEdit";
+import * as detection from "../domain/transferDetection";
+import * as recovery from "../domain/transferRecovery";
+import type { SkippedEntry } from "../domain/transferRecovery";
 import type {
   Account,
-  AccountType,
-  Budget,
   Category,
   Group,
   ISODate,
   Id,
-  ImportRecord,
-  Transaction,
+  Rule,
   Vault,
 } from "../domain/types";
 import { emptyVault } from "../domain/types";
 import {
   type VaultFolderPick,
   type VaultRepository,
-  createVaultRepositoryAt,
-  inspectVaultFolder,
   isTauri,
   pickRepository,
 } from "../persistence/repository";
+import * as session from "../persistence/session";
 
 type Status = "loading" | "ready" | "error";
 
+/** Outcome of an action the domain may refuse, reported back to the UI that asked. */
+export type ActionResult = { ok: true } | { ok: false; message: string };
+
 /** Outcome of changing the vault folder, reported back to the UI that asked. */
-export type VaultSwitchResult = { ok: true } | { ok: false; message: string };
+export type VaultSwitchResult = ActionResult;
 
 /** Outcome of editing a Transaction, reported back to the form that asked. */
-export type TransactionEditResult = { ok: true } | { ok: false; message: string };
+export type TransactionEditResult = ActionResult;
+
+/**
+ * Outcome of marking a selection as Transfers: how many became one, and every
+ * entry that could not, with its reason.
+ *
+ * The skips are carried back rather than counted and dropped. A batch chosen by
+ * description will sometimes include an entry that cannot convert, and a user
+ * who is told "188 converted" while 9 vanished silently has been misled about
+ * their own records.
+ */
+export type BulkTransferResult =
+  | { ok: true; converted: number; skipped: readonly SkippedEntry[] }
+  | { ok: false; message: string };
+
+type Refusal = { ok: false; message: string };
 
 interface VaultState {
   vault: Vault;
@@ -44,8 +71,19 @@ interface VaultState {
   vaultDir: string | null;
   /** Whether this runtime can open a vault folder at all (desktop only). */
   canChooseVault: boolean;
+  /**
+   * Why the last save failed, or null when what is on screen is on disk.
+   *
+   * A failed save used to be swallowed: the change stayed on screen, the user
+   * moved on, and it was gone at the next launch. Now the app says so until a
+   * later save succeeds — every save writes the whole vault, so one success
+   * means nothing is missing any more.
+   */
+  saveError: string | null;
 
   init: () => Promise<void>;
+  /** Write the current vault again, after a save failed. */
+  retrySave: () => Promise<void>;
 
   /** Ask the user for a folder. Returns null if they cancelled. */
   chooseVaultFolder: () => Promise<VaultFolderPick | null>;
@@ -54,47 +92,89 @@ interface VaultState {
   /** Write the current vault into `dir` and keep working there. */
   moveVaultTo: (dir: string) => Promise<VaultSwitchResult>;
 
-  addAccount: (input: {
-    name: string;
-    type: AccountType;
-    openingBalance: Centavos;
-  }) => void;
-  addGroup: (input: { name: string; kind: Group["kind"] }) => Group;
-  addCategory: (input: { name: string; groupId: Id }) => Category;
+  addAccount: (input: AccountInput) => { ok: true; account: Account } | Refusal;
+  /** Rename, retype or correct an Account's opening balance. */
+  editAccount: (accountId: Id, input: AccountInput) => ActionResult;
+  /** Remove an Account no Transaction touches; refused otherwise. */
+  deleteAccount: (accountId: Id) => ActionResult;
+
+  addGroup: (input: { name: string; kind: Group["kind"] }) => { ok: true; group: Group } | Refusal;
+  addCategory: (input: { name: string; groupId: Id }) => { ok: true; category: Category } | Refusal;
+  renameGroup: (groupId: Id, name: string) => ActionResult;
+  renameCategory: (categoryId: Id, name: string) => ActionResult;
+  /** Move a Category under another Group of the same kind. */
+  moveCategory: (categoryId: Id, groupId: Id) => ActionResult;
+  /** Refused while Transactions or a Budget still use it — never cascaded. */
+  deleteCategory: (categoryId: Id) => ActionResult;
+  /** Refused while the Group still has Categories. */
+  deleteGroup: (groupId: Id) => ActionResult;
+
+  /** Add a classification Rule at the end of the order, where it decides last. */
+  addRule: (input: RuleInput) => { ok: true; rule: Rule } | Refusal;
+  /** Change a Rule's pattern or Category, keeping its place in the order. */
+  editRule: (ruleId: Id, input: RuleInput) => ActionResult;
+  /** Remove a Rule, leaving the Transactions it classified exactly as they are. */
+  deleteRule: (ruleId: Id) => ActionResult;
+  /** Move a Rule one place up (-1) or down (1): the order *is* the priority. */
+  moveRule: (ruleId: Id, offset: -1 | 1) => ActionResult;
+  /**
+   * Run the Rules over the Transactions that have no Category yet, so writing a
+   * Rule clears the backlog instead of only helping the next Import.
+   */
+  applyRulesToUncategorized: () => { applied: number };
+  /**
+   * Classify every Uncategorized Transaction whose description the user has
+   * already filed, by hand and repeatedly, under one Category — the Suggestions
+   * the Transactions page shows, applied in one mutation. Fills gaps only,
+   * exactly like the Rules (ADR-0008), so it is idempotent and never overrules
+   * a decision.
+   */
+  applySuggestedCategories: () => { applied: number };
+
   addIncome: (input: {
     date: ISODate;
     amount: Centavos;
     accountId: Id;
-    categoryId: Id;
+    categoryId: Id | null;
     description: string;
-  }) => void;
+  }) => ActionResult;
   addExpense: (input: {
     date: ISODate;
     amount: Centavos;
     accountId: Id;
-    categoryId: Id;
+    categoryId: Id | null;
     description: string;
-  }) => void;
+  }) => ActionResult;
   addTransfer: (input: {
     date: ISODate;
     amount: Centavos;
     fromAccountId: Id;
     toAccountId: Id;
     description: string;
-  }) => void;
-  setBudget: (input: { categoryId: Id; monthlyLimit: Centavos }) => void;
-  /** Apply a planned Statement import, adding its new Transactions and recording the Import. */
-  commitImport: (input: { plan: ImportPlan; fileName: string }) => void;
-  /** Assign a Category to a Transaction, e.g. one that arrived uncategorized from an import. */
+  }) => ActionResult;
+  setBudget: (input: { categoryId: Id; monthlyLimit: Centavos }) => ActionResult;
+  /**
+   * Apply a planned Statement import, adding its new Transactions and recording
+   * the Import. The Rules run over the additions in the same mutation, so a
+   * routine month can arrive already classified.
+   *
+   * Reports what the Import did so the panel can say whether there is work
+   * left: how many entries were added, and how many of them a Rule classified.
+   */
+  commitImport: (input: { plan: ImportPlan; fileName: string }) => {
+    added: number;
+    classified: number;
+  };
+  /**
+   * Assign a Category to a Transaction, e.g. one that arrived uncategorized from
+   * an import. A Category of the other kind is ignored: an Income never sits in
+   * an expense Category, whatever the caller sent.
+   */
   setTransactionCategory: (transactionId: Id, categoryId: Id) => void;
   /**
    * Assign one Category to many Transactions at once — the only practical way to
-   * classify a statement's worth of imported Transactions.
-   *
-   * Deliberately not a loop over `setTransactionCategory`: every mutation
-   * persists the whole vault, so N calls would queue N multi-file writes onto
-   * the save chain. This is one mutation and therefore one save, whether it's
-   * two Transactions or five hundred.
+   * classify a statement's worth of imported Transactions. One mutation and
+   * therefore one save, whether it's two Transactions or five hundred.
    */
   setTransactionCategoryMany: (transactionIds: readonly Id[], categoryId: Id) => void;
   /**
@@ -123,56 +203,81 @@ interface VaultState {
     otherAccountId: Id,
   ) => TransactionEditResult;
   /**
+   * Mark a whole selection as Transfers against one other Account — the only
+   * practical way through a Statement's worth of internal moves. One mutation
+   * and therefore one save, whether it converts two entries or two hundred.
+   */
+  markTransactionsAsTransfer: (
+    transactionIds: readonly Id[],
+    otherAccountId: Id,
+  ) => BulkTransferResult;
+  /**
    * Undo a marking, restoring the imported entry the Transfer was recovered
    * from — including its `fitid`, without which the next Import of that
    * Statement would add the entry all over again.
    */
   revertTransferToEntry: (transferId: Id) => TransactionEditResult;
+  /**
+   * Accept a candidate pair: the Expense and the Income become one Transfer,
+   * replaced rather than kept alongside it (ADR-0006), remembering each side's
+   * bank id so a re-import adds nothing back.
+   */
+  acceptTransferPair: (outgoingId: Id, incomingId: Id) => ActionResult;
+  /** Say no to a candidate pair, so it is never offered again. */
+  dismissTransferPair: (a: Id, b: Id) => ActionResult;
 }
-
-let repository: VaultRepository | null = null;
 
 /**
  * Guards `init` so concurrent or repeated calls share a single run. Without it,
  * two inits on an empty vault each generate their own seed (fresh ids) and save
  * both, leaving groups and categories describing different vaults. React's
  * StrictMode invokes effects twice in development, so this is the normal case.
+ *
+ * Which repository saves go to, and the chain that keeps them from
+ * overlapping, live in the persistence session — that is the adapter's own
+ * invariant, not the store's.
  */
 let initPromise: Promise<void> | null = null;
 
-/**
- * Serializes persistence. A Tauri vault is several JSON files written one after
- * another, so two overlapping saves interleave their writes and tear the vault
- * (groups.json from one state, categories.json from another). Chaining makes
- * each save finish before the next starts; every save writes the whole state,
- * so the last one to run leaves the vault correct.
- */
-let saveChain: Promise<unknown> = Promise.resolve();
-
-function persist(vault: Vault): Promise<void> {
-  // Bind the save to the repository that was current when the change was made.
-  // Reading `repository` when the chain later runs would send a change meant for
-  // the old folder to a vault the user has since opened somewhere else.
-  const target = repository;
-  saveChain = saveChain
-    // A failed save must not break the chain for every save after it.
-    .catch(() => undefined)
-    .then(() => target?.save(vault));
-  return saveChain as Promise<void>;
-}
-
 /** Test seam: drop module state so a fresh store starts from nothing. */
 export function resetVaultPersistence(): void {
-  repository = null;
   initPromise = null;
-  saveChain = Promise.resolve();
+  session.resetSession();
+}
+
+function messageOf(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
 }
 
 export const useVault = create<VaultState>((set, get) => {
+  const reportSave = (error: unknown) => {
+    set({ saveError: error === null ? null : messageOf(error) });
+  };
+
   /** Apply a change to the vault, then persist it. */
   const mutate = (next: Vault) => {
     set({ vault: next });
-    void persist(next);
+    void session.queueSave(next, reportSave);
+  };
+
+  /**
+   * Run one Vault command: the single place a domain verdict becomes a write.
+   *
+   * A refusal writes nothing. The same Vault back means nothing changed, so
+   * nothing is saved — an empty save would still rewrite every file. A new
+   * Vault is one mutation and therefore one save, whatever the command touched.
+   * The command's report comes back to the caller with the `vault` removed:
+   * what the UI gets to know travels through the report, never the model.
+   */
+  const run = <R extends object>(
+    command: (vault: Vault) => CommandOutcome<R>,
+  ): ({ ok: true } & R) | Refusal => {
+    const vault = get().vault;
+    const outcome = command(vault);
+    if (!outcome.ok) return outcome;
+    if (outcome.vault !== vault) mutate(outcome.vault);
+    const { vault: _applied, ...report } = outcome;
+    return report as { ok: true } & R;
   };
 
   /**
@@ -189,16 +294,10 @@ export const useVault = create<VaultState>((set, get) => {
     take: (repo: VaultRepository) => Promise<Vault>,
   ): Promise<VaultSwitchResult> => {
     try {
-      // Let saves already queued finish against the old folder first.
-      await saveChain.catch(() => undefined);
+      // The session drains queued saves against the old folder, fails before
+      // swapping anything, and remembers the path before the swap.
+      const { repo, vault } = await session.attachTo(dir, take);
 
-      const repo = await createVaultRepositoryAt(dir, { mustExist: true });
-      const vault = await take(repo);
-
-      const { rememberVaultDir } = await import("../persistence/vaultLocation");
-      await rememberVaultDir(dir);
-
-      repository = repo;
       // The app is attached to a vault now, so a remount must not re-run init
       // and overwrite it with whatever the old location held.
       initPromise = Promise.resolve();
@@ -208,16 +307,12 @@ export const useVault = create<VaultState>((set, get) => {
         repoLabel: repo.label,
         vaultDir: repo.dir,
         error: null,
+        saveError: null,
       });
       return { ok: true };
     } catch (e) {
-      return { ok: false, message: e instanceof Error ? e.message : String(e) };
+      return { ok: false, message: messageOf(e) };
     }
-  };
-
-  const addTx = (tx: Transaction) => {
-    const vault = get().vault;
-    mutate({ ...vault, transactions: [...vault.transactions, tx] });
   };
 
   return {
@@ -227,16 +322,17 @@ export const useVault = create<VaultState>((set, get) => {
     error: null,
     vaultDir: null,
     canChooseVault: isTauri(),
+    saveError: null,
 
     init() {
       // One run per session, however many times this is called.
       initPromise ??= (async () => {
         try {
           const repo = await pickRepository();
-          repository = repo;
+          session.bindRepository(repo);
           const loaded = await repo.load();
           const vault = loaded ?? seedVault();
-          if (loaded === null) await persist(vault);
+          if (loaded === null) await session.queueSave(vault);
           set({
             vault,
             status: "ready",
@@ -244,7 +340,7 @@ export const useVault = create<VaultState>((set, get) => {
             vaultDir: repo.dir,
           });
         } catch (e) {
-          set({ status: "error", error: e instanceof Error ? e.message : String(e) });
+          set({ status: "error", error: messageOf(e) });
           // Let a later call retry after a failure.
           initPromise = null;
         }
@@ -252,11 +348,12 @@ export const useVault = create<VaultState>((set, get) => {
       return initPromise;
     },
 
-    async chooseVaultFolder() {
-      const { promptForVaultFolder } = await import("../persistence/vaultLocation");
-      const dir = await promptForVaultFolder();
-      if (dir === null) return null;
-      return inspectVaultFolder(dir);
+    async retrySave() {
+      await session.queueSave(get().vault, reportSave).catch(() => undefined);
+    },
+
+    chooseVaultFolder() {
+      return session.promptForFolder();
     },
 
     openVaultAt(dir) {
@@ -286,148 +383,134 @@ export const useVault = create<VaultState>((set, get) => {
       });
     },
 
-    addAccount({ name, type, openingBalance }) {
-      const vault = get().vault;
-      const account: Account = { id: newId(), name, type, openingBalance };
-      mutate({ ...vault, accounts: [...vault.accounts, account] });
+    addAccount(input) {
+      return run((v) => accountRules.addAccount(v, input, newId));
     },
 
-    addGroup({ name, kind }) {
-      const vault = get().vault;
-      const group: Group = { id: newId(), name, kind };
-      mutate({ ...vault, groups: [...vault.groups, group] });
-      return group;
+    editAccount(accountId, input) {
+      return run((v) => accountRules.editAccount(v, accountId, input));
     },
 
-    addCategory({ name, groupId }) {
-      const vault = get().vault;
-      const category: Category = { id: newId(), name, groupId };
-      mutate({ ...vault, categories: [...vault.categories, category] });
-      return category;
+    deleteAccount(accountId) {
+      return run((v) => accountRules.deleteAccount(v, accountId));
     },
 
-    addIncome({ date, amount, accountId, categoryId, description }) {
-      addTx({ id: newId(), kind: "income", date, amount, accountId, categoryId, description });
+    addGroup(input) {
+      return run((v) => categoryRules.addGroup(v, input, newId));
     },
 
-    addExpense({ date, amount, accountId, categoryId, description }) {
-      addTx({ id: newId(), kind: "expense", date, amount, accountId, categoryId, description });
+    addCategory(input) {
+      return run((v) => categoryRules.addCategory(v, input, newId));
     },
 
-    addTransfer({ date, amount, fromAccountId, toAccountId, description }) {
-      addTx({ id: newId(), kind: "transfer", date, amount, fromAccountId, toAccountId, description });
+    renameGroup(groupId, name) {
+      return run((v) => categoryRules.renameGroup(v, groupId, name));
     },
 
-    setBudget({ categoryId, monthlyLimit }) {
-      const vault = get().vault;
-      const existing = vault.budgets.find((b) => b.categoryId === categoryId);
-      const budgets = existing
-        ? vault.budgets.map((b) =>
-            b.categoryId === categoryId ? { ...b, monthlyLimit } : b,
-          )
-        : [...vault.budgets, { id: newId(), categoryId, monthlyLimit } satisfies Budget];
-      mutate({ ...vault, budgets });
+    renameCategory(categoryId, name) {
+      return run((v) => categoryRules.renameCategory(v, categoryId, name));
     },
 
-    commitImport({ plan, fileName }) {
-      const vault = get().vault;
-      const added = toTransactions(plan.additions, plan.accountId, newId);
-      const record: ImportRecord = {
-        id: newId(),
-        accountId: plan.accountId,
-        importedAt: new Date().toISOString(),
-        fileName,
-        added: added.length,
-        skipped: plan.duplicates.length,
-      };
-      mutate({
-        ...vault,
-        transactions: [...vault.transactions, ...added],
-        imports: [...vault.imports, record],
-      });
+    moveCategory(categoryId, groupId) {
+      return run((v) => categoryRules.moveCategory(v, categoryId, groupId));
+    },
+
+    deleteCategory(categoryId) {
+      return run((v) => categoryRules.deleteCategory(v, categoryId));
+    },
+
+    deleteGroup(groupId) {
+      return run((v) => categoryRules.deleteGroup(v, groupId));
+    },
+
+    addRule(input) {
+      return run((v) => classification.addRule(v, input, newId));
+    },
+
+    editRule(ruleId, input) {
+      return run((v) => classification.editRule(v, ruleId, input));
+    },
+
+    deleteRule(ruleId) {
+      return run((v) => classification.deleteRule(v, ruleId));
+    },
+
+    moveRule(ruleId, offset) {
+      return run((v) => classification.moveRule(v, ruleId, offset));
+    },
+
+    applyRulesToUncategorized() {
+      const result = run(classification.applyRulesToUncategorized);
+      return { applied: result.ok ? result.applied : 0 };
+    },
+
+    applySuggestedCategories() {
+      const result = run(suggestions.applySuggestions);
+      return { applied: result.ok ? result.applied : 0 };
+    },
+
+    addIncome(input) {
+      return run((v) => txCreate.addTransaction(v, { kind: "income", ...input }, newId()));
+    },
+
+    addExpense(input) {
+      return run((v) => txCreate.addTransaction(v, { kind: "expense", ...input }, newId()));
+    },
+
+    addTransfer(input) {
+      return run((v) => txCreate.addTransaction(v, { kind: "transfer", ...input }, newId()));
+    },
+
+    setBudget(input) {
+      return run((v) => budgetRules.setBudget(v, input, newId));
+    },
+
+    commitImport(input) {
+      const result = run((v) =>
+        statementImport.commitImport(v, input, {
+          newId,
+          now: () => new Date().toISOString(),
+        }),
+      );
+      return result.ok
+        ? { added: result.added, classified: result.classified }
+        : { added: 0, classified: 0 };
     },
 
     setTransactionCategory(transactionId, categoryId) {
-      const vault = get().vault;
-      mutate({
-        ...vault,
-        transactions: vault.transactions.map((tx) =>
-          tx.id === transactionId && tx.kind !== "transfer"
-            ? { ...tx, categoryId }
-            : tx,
-        ),
-      });
+      run((v) => classification.classifyAs(v, [transactionId], categoryId));
     },
 
     setTransactionCategoryMany(transactionIds, categoryId) {
-      // No ids means no change, and an empty save would still rewrite every file.
-      if (transactionIds.length === 0) return;
-      const wanted = new Set(transactionIds);
-      const vault = get().vault;
-      mutate({
-        ...vault,
-        transactions: vault.transactions.map((tx) =>
-          // A Transfer carries no Category, so it's never a target even if asked for.
-          wanted.has(tx.id) && tx.kind !== "transfer" ? { ...tx, categoryId } : tx,
-        ),
-      });
+      run((v) => classification.classifyAs(v, transactionIds, categoryId));
     },
 
     editTransaction(transactionId, changes) {
-      const vault = get().vault;
-      // The domain decides what the Transaction becomes, or refuses; nothing is
-      // written until it says yes, so a refused edit leaves the vault as it was.
-      const outcome = editedTransaction(vault, transactionId, changes);
-      if (!outcome.ok) return { ok: false, message: outcome.message };
-
-      mutate({
-        ...vault,
-        transactions: vault.transactions.map((tx) =>
-          tx.id === transactionId ? outcome.transaction : tx,
-        ),
-      });
-      return { ok: true };
+      return run((v) => txEdit.editTransaction(v, transactionId, changes));
     },
 
     deleteTransaction(transactionId) {
-      const vault = get().vault;
-      // Nothing to remove means nothing to save.
-      if (!vault.transactions.some((tx) => tx.id === transactionId)) return;
-      mutate({
-        ...vault,
-        transactions: vault.transactions.filter((tx) => tx.id !== transactionId),
-      });
+      run((v) => txEdit.deleteTransaction(v, transactionId));
     },
 
     markTransactionAsTransfer(transactionId, otherAccountId) {
-      const vault = get().vault;
-      const outcome = transferFromEntry(vault, transactionId, otherAccountId);
-      if (!outcome.ok) return { ok: false, message: outcome.message };
+      return run((v) => recovery.markAsTransfer(v, transactionId, otherAccountId));
+    },
 
-      // One mutation, so one save: the entry is replaced in place rather than
-      // removed and re-added, which would be two writes and a vault that is
-      // briefly missing the money.
-      mutate({
-        ...vault,
-        transactions: vault.transactions.map((tx) =>
-          tx.id === transactionId ? outcome.transaction : tx,
-        ),
-      });
-      return { ok: true };
+    markTransactionsAsTransfer(transactionIds, otherAccountId) {
+      return run((v) => recovery.markAllAsTransfers(v, transactionIds, otherAccountId));
     },
 
     revertTransferToEntry(transferId) {
-      const vault = get().vault;
-      const outcome = entryFromTransfer(vault, transferId);
-      if (!outcome.ok) return { ok: false, message: outcome.message };
+      return run((v) => recovery.undoMarking(v, transferId));
+    },
 
-      mutate({
-        ...vault,
-        transactions: vault.transactions.map((tx) =>
-          tx.id === transferId ? outcome.transaction : tx,
-        ),
-      });
-      return { ok: true };
+    acceptTransferPair(outgoingId, incomingId) {
+      return run((v) => detection.acceptTransferPair(v, outgoingId, incomingId, newId));
+    },
+
+    dismissTransferPair(a, b) {
+      return run((v) => detection.dismissTransferPair(v, a, b));
     },
   };
 });

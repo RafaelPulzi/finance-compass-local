@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { ZERO, formatBRL, parseBRL } from "../domain/money";
+import { ZERO, formatBRLInput, parseBRL } from "../domain/money";
 import { budgetStatusForMonth, type MonthKey } from "../domain/reporting";
 import { useVault } from "../store/useVault";
 import { BudgetMeter } from "./BudgetMeter";
@@ -35,8 +35,8 @@ export function BudgetsPanel({ month }: { month: MonthKey }) {
     try {
       const monthlyLimit = draft.trim() === "" ? parseBRL("0") : parseBRL(draft);
       if (monthlyLimit < 0) throw new Error();
-      setBudget({ categoryId, monthlyLimit });
-      setError(null);
+      const result = setBudget({ categoryId, monthlyLimit });
+      setError(result.ok ? null : result.message);
     } catch {
       setError("Valor inválido. Use o formato 800,00.");
     }
@@ -63,11 +63,9 @@ export function BudgetsPanel({ month }: { month: MonthKey }) {
           </p>
         ) : (
           <ul className="divide-y divide-slate-100 dark:divide-slate-700">
-            {statuses
-              .filter((s) => s.limit > 0)
-              .map((status) => (
-                <BudgetMeter key={status.categoryId} status={status} />
-              ))}
+            {statuses.map((status) => (
+              <BudgetMeter key={status.categoryId} status={status} />
+            ))}
           </ul>
         )}
       </section>
@@ -87,7 +85,7 @@ export function BudgetsPanel({ month }: { month: MonthKey }) {
             const stored = limitByCategory.get(category.id) ?? ZERO;
             const value =
               drafts[category.id] ??
-              (stored > 0 ? formatBRL(stored).replace(/^R\$\s*/u, "") : "");
+              (stored > 0 ? formatBRLInput(stored) : "");
             return (
               <li key={category.id} className="flex items-center justify-between gap-3 py-2">
                 <div className="min-w-0">

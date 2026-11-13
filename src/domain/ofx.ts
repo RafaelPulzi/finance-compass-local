@@ -1,3 +1,4 @@
+import { isValidISODate } from "./dates";
 import type { ISODate } from "./types";
 
 /**
@@ -65,11 +66,30 @@ export function decodeOfxBytes(buffer: ArrayBuffer): string {
     }
   }
 
+  // The reverse lie: no charset (or "UTF-8") in the header, but the accents are
+  // single windows-1252 bytes. Decoding those as UTF-8 turns every "Ç" into
+  // U+FFFD, which no later step can undo, so a file that is not valid UTF-8 is
+  // read as the encoding Brazilian banks actually use.
+  if (label === "utf-8") {
+    try {
+      return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    } catch {
+      return new TextDecoder("windows-1252").decode(bytes);
+    }
+  }
+
   try {
     return new TextDecoder(label).decode(bytes);
   } catch {
     return new TextDecoder("utf-8").decode(bytes);
   }
+}
+
+/** A numeric character reference, or the reference itself when it names no character. */
+function fromCodePoint(code: number, original: string): string {
+  return Number.isInteger(code) && code >= 0 && code <= 0x10ffff
+    ? String.fromCodePoint(code)
+    : original;
 }
 
 function decodeEntities(value: string): string {
@@ -78,7 +98,9 @@ function decodeEntities(value: string): string {
     .replace(/&gt;/gi, ">")
     .replace(/&quot;/gi, '"')
     .replace(/&apos;/gi, "'")
-    .replace(/&#(\d+);/g, (_, code: string) => String.fromCodePoint(Number(code)))
+    .replace(/&#x([0-9a-f]+);/gi, (ref, hex: string) => fromCodePoint(parseInt(hex, 16), ref))
+    // An out-of-range reference must not abort the whole Statement.
+    .replace(/&#(\d+);/g, (ref, code: string) => fromCodePoint(Number(code), ref))
     // &amp; must be decoded last so "&amp;lt;" does not become "<".
     .replace(/&amp;/gi, "&");
 }
@@ -145,10 +167,13 @@ export function parseOfxDate(raw: string): ISODate {
   const match = /(\d{4})(\d{2})(\d{2})/.exec(raw.trim());
   if (!match) throw new Error(`Data OFX inválida: "${raw}"`);
   const [, year, month, day] = match;
-  if (Number(month) < 1 || Number(month) > 12 || Number(day) < 1 || Number(day) > 31) {
+  const date = `${year}-${month}-${day}`;
+  // "20260231" has the right shape and is still not a day; such an entry is
+  // counted as unreadable rather than filed under a date that never existed.
+  if (!isValidISODate(date)) {
     throw new Error(`Data OFX inválida: "${raw}"`);
   }
-  return `${year}-${month}-${day}`;
+  return date;
 }
 
 function describe(block: string): string {

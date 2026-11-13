@@ -1,3 +1,5 @@
+import type { CommandOutcome } from "./command";
+import { missingAccount } from "./transactionValidation";
 import type { Id, Transaction, TransferTransaction, Vault } from "./types";
 
 /**
@@ -44,9 +46,8 @@ export function transferFromEntry(
   if (entry.kind === "transfer") {
     return { ok: false, message: "Essa transação já é uma transferência." };
   }
-  if (!vault.accounts.some((a) => a.id === otherAccountId)) {
-    return { ok: false, message: "Conta inexistente." };
-  }
+  const noAccount = missingAccount(vault, otherAccountId);
+  if (noAccount !== null) return noAccount;
   if (otherAccountId === entry.accountId) {
     // The same rule the manual Transfer form enforces: money that left and
     // arrived in one Account never moved between two.
@@ -142,4 +143,141 @@ export function entryFromTransfer(vault: Vault, transferId: Id): RecoveryOutcome
       fitid: entry.fitid,
     },
   };
+}
+
+// --- Marking many entries at once -----------------------------------------
+
+/** One entry that could not become a Transfer, and why it could not. */
+export interface SkippedEntry {
+  transactionId: Id;
+  message: string;
+}
+
+export type BulkRecoveryOutcome =
+  | {
+      ok: true;
+      /** The Transfers, each keeping the id of the entry it replaces. */
+      transfers: Transaction[];
+      skipped: SkippedEntry[];
+    }
+  | { ok: false; message: string };
+
+/**
+ * The same marking, decided for many entries against one other Account.
+ *
+ * A real Statement does not hold one internal move, it holds hundreds: a vault
+ * built from two years of one checking account can carry ~190 `RESGATE` and ~90
+ * `APLICACAO` entries, every one of them the same judgement. Marking them one
+ * at a time is not a smaller version of the same work, it is work nobody
+ * finishes, and an unfinished pass leaves the totals as wrong as before.
+ *
+ * Still one decision per entry, taken by `transferFromEntry`, so a batch can
+ * never mean something the single marking would not. The direction of each
+ * Transfer comes from that entry's own kind, which is why a selection mixing
+ * Expenses and Incomes is fine here: money leaving and money arriving both
+ * describe the same other Account.
+ *
+ * A batch is partial rather than all-or-nothing. Selecting by description
+ * ("everything matching APLICACAO") sweeps in the occasional entry that cannot
+ * convert — one already marked, one already on the chosen Account — and
+ * refusing the other 188 because of it would be a worse answer than converting
+ * them and saying what was left out. Nothing is hidden: every skip is returned
+ * with its reason for the caller to report.
+ */
+export function transfersFromEntries(
+  vault: Vault,
+  transactionIds: readonly Id[],
+  otherAccountId: Id,
+): BulkRecoveryOutcome {
+  // The whole batch shares one other Account, so a bad Account is a refusal of
+  // the batch and not a hundred identical skips.
+  const noAccount = missingAccount(vault, otherAccountId);
+  if (noAccount !== null) return noAccount;
+  if (transactionIds.length === 0) {
+    return { ok: false, message: "Selecione pelo menos um lançamento." };
+  }
+
+  const transfers: Transaction[] = [];
+  const skipped: SkippedEntry[] = [];
+  // The same id twice is the caller's accident, not a second conversion.
+  for (const transactionId of new Set(transactionIds)) {
+    const outcome = transferFromEntry(vault, transactionId, otherAccountId);
+    if (outcome.ok) transfers.push(outcome.transaction);
+    else skipped.push({ transactionId, message: outcome.message });
+  }
+  return { ok: true, transfers, skipped };
+}
+
+// --- Commands: the Vault each marking leaves behind -------------------------
+
+/** The entry replaced in place: same id, so the row the user was looking at stays put. */
+function spliced(vault: Vault, transaction: Transaction): Vault {
+  return {
+    ...vault,
+    transactions: vault.transactions.map((tx) =>
+      tx.id === transaction.id ? transaction : tx,
+    ),
+  };
+}
+
+/** The Vault with one imported entry marked as a Transfer. */
+export function markAsTransfer(
+  vault: Vault,
+  transactionId: Id,
+  otherAccountId: Id,
+): CommandOutcome {
+  const outcome = transferFromEntry(vault, transactionId, otherAccountId);
+  if (!outcome.ok) return outcome;
+  return { ok: true, vault: spliced(vault, outcome.transaction) };
+}
+
+/**
+ * The Vault with a whole selection marked against one other Account, and what
+ * was skipped. Each Transfer kept the id of the entry it replaces, so the batch
+ * splices in with one pass — one new Vault, one save. Converting nothing is
+ * still `ok`: the skips, not a refusal, are the report.
+ */
+export function markAllAsTransfers(
+  vault: Vault,
+  transactionIds: readonly Id[],
+  otherAccountId: Id,
+): CommandOutcome<{ converted: number; skipped: readonly SkippedEntry[] }> {
+  const outcome = transfersFromEntries(vault, transactionIds, otherAccountId);
+  if (!outcome.ok) return outcome;
+  if (outcome.transfers.length === 0) {
+    return { ok: true, vault, converted: 0, skipped: outcome.skipped };
+  }
+  const byId = new Map(outcome.transfers.map((tx) => [tx.id, tx]));
+  return {
+    ok: true,
+    vault: {
+      ...vault,
+      transactions: vault.transactions.map((tx) => byId.get(tx.id) ?? tx),
+    },
+    converted: outcome.transfers.length,
+    skipped: outcome.skipped,
+  };
+}
+
+/**
+ * Whether "desfazer" has anything to restore: only a Transfer recovered from a
+ * single imported entry that still names one of its own sides. A Transfer the
+ * user typed in has no earlier entry, and one recovered from both sides belongs
+ * to the pair list. This is `entryFromTransfer`'s own answer, exported so the
+ * page showing the button and the command behind it cannot disagree — and so
+ * the page stops reading `recoveredFrom` for itself.
+ */
+export function canUndoMarking(tx: Transaction): boolean {
+  if (tx.kind !== "transfer") return false;
+  const recovered = tx.recoveredFrom ?? [];
+  if (recovered.length !== 1) return false;
+  const [entry] = recovered;
+  return entry.accountId === tx.fromAccountId || entry.accountId === tx.toAccountId;
+}
+
+/** The Vault with a marking undone: the Transfer is its imported entry again. */
+export function undoMarking(vault: Vault, transferId: Id): CommandOutcome {
+  const outcome = entryFromTransfer(vault, transferId);
+  if (!outcome.ok) return outcome;
+  return { ok: true, vault: spliced(vault, outcome.transaction) };
 }

@@ -206,3 +206,98 @@ describe("parseOfx error handling", () => {
     expect(() => parseOfx("date,amount\n2026-01-01,10")).toThrow();
   });
 });
+
+describe("decodeOfxBytes when the header is missing or wrong the other way", () => {
+  /** windows-1252 bytes; every character used is in latin1, where 1252 and charCode agree. */
+  const latin1 = (text: string) => Uint8Array.from(text, (ch) => ch.charCodeAt(0)).buffer as ArrayBuffer;
+
+  it("reads windows-1252 accents in a file that declares no charset at all", () => {
+    // Without a CHARSET line the default was UTF-8, and every "Ç" became U+FFFD.
+    const text = decodeOfxBytes(
+      latin1("<OFX><STMTTRN><FITID>1<DTPOSTED>20260105<TRNAMT>-1.00<MEMO>AÇOUGUE SÃO JOÃO</STMTTRN></OFX>"),
+    );
+    expect(text).toContain("AÇOUGUE SÃO JOÃO");
+    expect(text).not.toContain("�");
+  });
+
+  it("reads windows-1252 accents in a file that wrongly claims UTF-8", () => {
+    const text = decodeOfxBytes(
+      latin1("OFXHEADER:100\nENCODING:UTF-8\n\n<OFX><STMTTRN><MEMO>FARMÁCIA</STMTTRN></OFX>"),
+    );
+    expect(text).toContain("FARMÁCIA");
+  });
+
+  it("still reads real UTF-8 with no header as UTF-8", () => {
+    const bytes = new TextEncoder().encode("<OFX><MEMO>PÃO DE AÇÚCAR</OFX>");
+    expect(decodeOfxBytes(bytes.buffer as ArrayBuffer)).toContain("PÃO DE AÇÚCAR");
+  });
+});
+
+describe("parseOfx robustness", () => {
+  const one = (fields: string) =>
+    `<OFX><BANKTRANLIST><STMTTRN>${fields}</STMTTRN></BANKTRANLIST></OFX>`;
+
+  it("counts an entry dated on a day that does not exist as unreadable", () => {
+    const statement = parseOfx(one("<FITID>x<DTPOSTED>20260231<TRNAMT>-5.00"));
+    expect(statement.entries).toHaveLength(0);
+    expect(statement.malformed).toBe(1);
+  });
+
+  it("decodes hexadecimal character references", () => {
+    const statement = parseOfx(one("<FITID>x<DTPOSTED>20260105<TRNAMT>-5.00<MEMO>CAF&#xC9; &#233;"));
+    expect(statement.entries[0].description).toBe("CAFÉ é");
+  });
+
+  it("keeps an out-of-range character reference as text instead of failing the whole file", () => {
+    const statement = parseOfx(
+      one("<FITID>x<DTPOSTED>20260105<TRNAMT>-5.00<MEMO>LOJA &#99999999; CENTRO"),
+    );
+    expect(statement.entries).toHaveLength(1);
+    expect(statement.entries[0].description).toBe("LOJA &#99999999; CENTRO");
+  });
+
+  it("does not double-decode an escaped ampersand", () => {
+    const statement = parseOfx(one("<FITID>x<DTPOSTED>20260105<TRNAMT>-5.00<MEMO>A &amp;lt; B"));
+    expect(statement.entries[0].description).toBe("A &lt; B");
+  });
+
+  it("joins NAME and MEMO, and does not repeat them when the bank sends the same text twice", () => {
+    const both = parseOfx(one("<FITID>x<DTPOSTED>20260105<TRNAMT>-5.00<NAME>UBER<MEMO>VIAGEM"));
+    expect(both.entries[0].description).toBe("UBER · VIAGEM");
+    const same = parseOfx(one("<FITID>x<DTPOSTED>20260105<TRNAMT>-5.00<NAME>UBER<MEMO>UBER"));
+    expect(same.entries[0].description).toBe("UBER");
+  });
+
+  it("reads a statement whose last STMTTRN has no closing tag", () => {
+    const text = `<OFX><BANKTRANLIST>
+<STMTTRN><FITID>a<DTPOSTED>20260105<TRNAMT>-1.00
+<STMTTRN><FITID>b<DTPOSTED>20260106<TRNAMT>2.00
+</BANKTRANLIST></OFX>`;
+    const statement = parseOfx(text);
+    expect(statement.entries.map((e) => [e.fitid, e.amount])).toEqual([
+      ["a", -100],
+      ["b", 200],
+    ]);
+  });
+
+  it("handles a large statement quickly and exactly", () => {
+    // Two years of a busy account is a few thousand entries; the total must be exact.
+    const blocks: string[] = [];
+    let expected = 0;
+    for (let i = 0; i < 5000; i++) {
+      const cents = ((i * 37) % 100000) - 50000;
+      expected += cents;
+      const amount = `${cents < 0 ? "-" : ""}${Math.floor(Math.abs(cents) / 100)}.${String(Math.abs(cents) % 100).padStart(2, "0")}`;
+      blocks.push(`<STMTTRN><FITID>F${i}<DTPOSTED>2026${String((i % 12) + 1).padStart(2, "0")}15<TRNAMT>${amount}<MEMO>ITEM ${i}</STMTTRN>`);
+    }
+    const started = performance.now();
+    const statement = parseOfx(`<OFX><BANKTRANLIST>${blocks.join("\n")}</BANKTRANLIST></OFX>`);
+    const elapsed = performance.now() - started;
+
+    expect(statement.entries).toHaveLength(5000);
+    expect(statement.malformed).toBe(0);
+    expect(statement.entries.reduce((sum, e) => sum + e.amount, 0)).toBe(expected);
+    // Generous on purpose: this guards against accidental quadratic parsing, not machine speed.
+    expect(elapsed).toBeLessThan(5000);
+  });
+});

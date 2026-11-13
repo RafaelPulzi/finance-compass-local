@@ -1,8 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { deriveAccountBalance } from "../domain/balances";
 import { centavos } from "../domain/money";
+import { pendingRuleCount } from "../domain/classificationRules";
 import { planImport } from "../domain/statementImport";
 import type { Transaction, Vault } from "../domain/types";
+import { VAULT_COLLECTIONS } from "../domain/types";
 
 /**
  * Repositories that model the real Tauri vault: a folder per vault, each entity
@@ -40,6 +42,8 @@ const state = {
   /** Suspend a folder switch just before it swaps repositories. */
   stallRemember: false,
   releaseRemember: null as (() => void) | null,
+  /** When set, every save fails with this message (a full disk, a vanished drive). */
+  failSaves: null as string | null,
 };
 
 function folder(dir: string): FakeFolder {
@@ -51,15 +55,9 @@ function folder(dir: string): FakeFolder {
   return found;
 }
 
-const ENTITIES = [
-  "accounts",
-  "groups",
-  "categories",
-  "transactions",
-  "budgets",
-  "imports",
-  "dismissedTransferPairs",
-] as const;
+// The same table the real load/save iterate, so this fake can never fall a
+// collection behind the schema.
+const ENTITIES = VAULT_COLLECTIONS;
 
 const yieldToOtherTasks = () => new Promise((r) => setTimeout(r, state.saveDelayMs));
 
@@ -73,10 +71,11 @@ function seedFolder(dir: string, vault: Vault): void {
 
 function vaultWith(partial: Partial<Vault>): Vault {
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     accounts: [],
     groups: [],
     categories: [],
+    rules: [],
     transactions: [],
     budgets: [],
     imports: [],
@@ -102,6 +101,10 @@ function makeRepo(dir: string) {
     },
     save: async (vault: Vault): Promise<void> => {
       const f = folder(dir);
+      if (state.failSaves !== null) {
+        await yieldToOtherTasks();
+        throw new Error(state.failSaves);
+      }
       state.inFlight += 1;
       state.saveCount += 1;
       const isFirst = state.saveCount === 1;
@@ -172,6 +175,7 @@ beforeEach(() => {
   state.remembered = undefined;
   state.stallRemember = false;
   state.releaseRemember = null;
+  state.failSaves = null;
 });
 
 describe("init", () => {
@@ -252,11 +256,13 @@ describe("persistence ordering", () => {
     state.saveCount = 0; // the next save is the one to stall
     state.stallFirstSaveAfter = "groups";
 
-    const group = useVault.getState().addGroup({ name: "Lazer", kind: "expense" });
+    // Not a name the seed already has, which would be refused as a duplicate.
+    const added = useVault.getState().addGroup({ name: "Projetos", kind: "expense" });
+    if (!added.ok) throw new Error(added.message);
     await vi.waitFor(() => expect(state.releaseStall).not.toBeNull());
 
     // A second mutation while the first save is suspended.
-    useVault.getState().addCategory({ name: "Cinema", groupId: group.id });
+    useVault.getState().addCategory({ name: "Cinema", groupId: added.group.id });
     await new Promise((r) => setTimeout(r, 5));
     state.releaseStall?.();
 
@@ -1035,5 +1041,744 @@ describe("marking an entry as a Transfer, and reverting it", () => {
 
     expect(plan.additions).toHaveLength(0);
     expect(plan.duplicates).toHaveLength(1);
+  });
+});
+
+describe("a save that fails", () => {
+  async function readyStore() {
+    const useVault = await freshStore();
+    seedFolder(DEFAULT_DIR, vaultWith({}));
+    await useVault.getState().init();
+    state.saves = [];
+    return useVault;
+  }
+
+  const account = { name: "Inter", type: "checking" as const, openingBalance: centavos(0) };
+
+  it("is reported instead of swallowed, so the user knows the change is not on disk", async () => {
+    const useVault = await readyStore();
+    state.failSaves = "Disco cheio";
+
+    useVault.getState().addAccount(account);
+
+    await vi.waitFor(() => expect(useVault.getState().saveError).toBe("Disco cheio"));
+    // The change is still on screen; only the disk is behind.
+    expect(useVault.getState().vault.accounts).toHaveLength(1);
+    expect(diskOf(DEFAULT_DIR).accounts).toEqual([]);
+  });
+
+  it("clears once a retry writes the whole vault", async () => {
+    const useVault = await readyStore();
+    state.failSaves = "Disco cheio";
+    useVault.getState().addAccount(account);
+    await vi.waitFor(() => expect(useVault.getState().saveError).not.toBeNull());
+
+    state.failSaves = null;
+    await useVault.getState().retrySave();
+
+    expect(useVault.getState().saveError).toBeNull();
+    expect(diskOf(DEFAULT_DIR).accounts).toMatchObject([{ name: "Inter" }]);
+  });
+
+  it("clears on the next change that saves, since every save writes everything", async () => {
+    const useVault = await readyStore();
+    state.failSaves = "Sem permissão";
+    useVault.getState().addAccount(account);
+    await vi.waitFor(() => expect(useVault.getState().saveError).not.toBeNull());
+
+    state.failSaves = null;
+    useVault.getState().addAccount({ ...account, name: "Poupança" });
+
+    await vi.waitFor(() => expect(useVault.getState().saveError).toBeNull());
+    expect(diskOf(DEFAULT_DIR).accounts).toHaveLength(2);
+  });
+
+  it("does not jam the chain: later saves still run", async () => {
+    const useVault = await readyStore();
+    state.failSaves = "falhou";
+    useVault.getState().addAccount(account);
+    await vi.waitFor(() => expect(useVault.getState().saveError).not.toBeNull());
+    state.failSaves = null;
+
+    useVault.getState().addAccount({ ...account, name: "B" });
+    await vi.waitFor(() => expect(state.saves).toHaveLength(1));
+  });
+});
+
+describe("refused actions write nothing", () => {
+  const ACC = "acc-1";
+
+  async function store() {
+    const useVault = await freshStore();
+    seedFolder(
+      DEFAULT_DIR,
+      vaultWith({
+        accounts: [{ id: ACC, name: "Inter", type: "checking", openingBalance: centavos(0) }],
+        groups: [
+          { id: "g-food", name: "Alimentação", kind: "expense" },
+          { id: "g-in", name: "Renda", kind: "income" },
+        ],
+        categories: [
+          { id: "cat-market", name: "Mercado", groupId: "g-food" },
+          { id: "cat-salary", name: "Salário", groupId: "g-in" },
+        ],
+        transactions: [
+          {
+            id: "e1",
+            kind: "expense",
+            date: "2026-10-02",
+            amount: centavos(1000),
+            description: "e1",
+            accountId: ACC,
+            categoryId: null,
+          },
+          {
+            id: "i1",
+            kind: "income",
+            date: "2026-10-05",
+            amount: centavos(5000),
+            description: "i1",
+            accountId: ACC,
+            categoryId: null,
+          },
+        ],
+      }),
+    );
+    await useVault.getState().init();
+    state.saves = [];
+    return useVault;
+  }
+
+  /** Give any save a chance to land, then prove none did. */
+  async function expectNoSave() {
+    await new Promise((r) => setTimeout(r, 10));
+    expect(state.saves).toHaveLength(0);
+  }
+
+  it("an Income under an expense Category is refused", async () => {
+    const useVault = await store();
+    const before = useVault.getState().vault;
+    const result = useVault.getState().addIncome({
+      date: "2026-10-07",
+      amount: centavos(100),
+      accountId: ACC,
+      categoryId: "cat-market",
+      description: "x",
+    });
+    expect(result.ok).toBe(false);
+    expect(useVault.getState().vault).toBe(before);
+    await expectNoSave();
+  });
+
+  it("a valid manual Expense is recorded with one save", async () => {
+    const useVault = await store();
+    const result = useVault.getState().addExpense({
+      date: "2026-10-07",
+      amount: centavos(100),
+      accountId: ACC,
+      categoryId: "cat-market",
+      description: "x",
+    });
+    expect(result.ok).toBe(true);
+    await vi.waitFor(() => expect(state.saves).toHaveLength(1));
+  });
+
+  it("classifying an Income into an expense Category changes nothing", async () => {
+    const useVault = await store();
+    useVault.getState().setTransactionCategory("i1", "cat-market");
+    useVault.getState().setTransactionCategoryMany(["i1"], "cat-market");
+    const income = useVault.getState().vault.transactions.find((t) => t.id === "i1");
+    expect(income).toMatchObject({ categoryId: null });
+    await expectNoSave();
+  });
+
+  it("a mixed bulk classification only touches the matching kind", async () => {
+    const useVault = await store();
+    useVault.getState().setTransactionCategoryMany(["e1", "i1"], "cat-market");
+    const byId = new Map(useVault.getState().vault.transactions.map((t) => [t.id, t]));
+    expect(byId.get("e1")).toMatchObject({ categoryId: "cat-market" });
+    expect(byId.get("i1")).toMatchObject({ categoryId: null });
+    await vi.waitFor(() => expect(state.saves).toHaveLength(1));
+  });
+
+  it("classifying into a Category the vault does not have changes nothing", async () => {
+    const useVault = await store();
+    useVault.getState().setTransactionCategoryMany(["e1"], "cat-ghost");
+    expect(useVault.getState().vault.transactions[0]).toMatchObject({ categoryId: null });
+    await expectNoSave();
+  });
+
+  it("a Budget on an income Category, or a negative one, is refused", async () => {
+    const useVault = await store();
+    expect(
+      useVault.getState().setBudget({ categoryId: "cat-salary", monthlyLimit: centavos(100) }).ok,
+    ).toBe(false);
+    expect(
+      useVault.getState().setBudget({ categoryId: "cat-market", monthlyLimit: centavos(-1) }).ok,
+    ).toBe(false);
+    await expectNoSave();
+  });
+
+  it("setting a Budget to the limit it already has saves nothing", async () => {
+    const useVault = await store();
+    useVault.getState().setBudget({ categoryId: "cat-market", monthlyLimit: centavos(800) });
+    await vi.waitFor(() => expect(state.saves).toHaveLength(1));
+    state.saves = [];
+    expect(
+      useVault.getState().setBudget({ categoryId: "cat-market", monthlyLimit: centavos(800) }).ok,
+    ).toBe(true);
+    await expectNoSave();
+  });
+
+  it("a duplicate Account name is refused", async () => {
+    const useVault = await store();
+    const result = useVault
+      .getState()
+      .addAccount({ name: "inter", type: "cash", openingBalance: centavos(0) });
+    expect(result.ok).toBe(false);
+    await expectNoSave();
+  });
+
+  it("deleting a Category in use, or an Account with Transactions, is refused", async () => {
+    const useVault = await store();
+    useVault.getState().setTransactionCategory("e1", "cat-market");
+    await vi.waitFor(() => expect(state.saves).toHaveLength(1));
+    state.saves = [];
+
+    expect(useVault.getState().deleteCategory("cat-market").ok).toBe(false);
+    expect(useVault.getState().deleteAccount(ACC).ok).toBe(false);
+    expect(useVault.getState().vault.categories).toHaveLength(2);
+    expect(useVault.getState().vault.accounts).toHaveLength(1);
+    await expectNoSave();
+  });
+});
+
+describe("managing Categories and Accounts", () => {
+  async function store() {
+    const useVault = await freshStore();
+    seedFolder(
+      DEFAULT_DIR,
+      vaultWith({
+        accounts: [{ id: "acc", name: "Inter", type: "checking", openingBalance: centavos(10000) }],
+        transactions: [
+          {
+            id: "e1",
+            kind: "expense",
+            date: "2026-10-02",
+            amount: centavos(2500),
+            description: "FARMACIA",
+            accountId: "acc",
+            categoryId: null,
+          },
+        ],
+      }),
+    );
+    await useVault.getState().init();
+    state.saves = [];
+    return useVault;
+  }
+
+  it("builds a tree, classifies into it, and tidies it up without losing a classification", async () => {
+    const useVault = await store();
+    const s = () => useVault.getState();
+
+    const group = s().addGroup({ name: "Saúde", kind: "expense" });
+    if (!group.ok) throw new Error(group.message);
+    const other = s().addGroup({ name: "Cuidados", kind: "expense" });
+    if (!other.ok) throw new Error(other.message);
+    const category = s().addCategory({ name: "Farmácia", groupId: group.group.id });
+    if (!category.ok) throw new Error(category.message);
+
+    s().setTransactionCategory("e1", category.category.id);
+    expect(s().renameCategory(category.category.id, "Remédios").ok).toBe(true);
+    expect(s().moveCategory(category.category.id, other.group.id).ok).toBe(true);
+
+    // Still classified, under the new name and Group.
+    expect(s().vault.transactions[0]).toMatchObject({ categoryId: category.category.id });
+    expect(s().vault.categories[0]).toMatchObject({ name: "Remédios", groupId: other.group.id });
+
+    // The emptied Group can go; the one holding the Category cannot.
+    expect(s().deleteGroup(group.group.id).ok).toBe(true);
+    expect(s().deleteGroup(other.group.id).ok).toBe(false);
+
+    // Seven changes, seven saves: wait for every one, or the last lands in the next test.
+    await vi.waitFor(() => expect(state.saves).toHaveLength(7));
+    expect(diskOf(DEFAULT_DIR).categories).toMatchObject([{ name: "Remédios" }]);
+    expect(diskOf(DEFAULT_DIR).groups).toMatchObject([{ name: "Cuidados" }]);
+  });
+
+  it("corrects an Account's opening balance, and the derived balance follows", async () => {
+    const useVault = await store();
+    const result = useVault.getState().editAccount("acc", {
+      name: "Banco Inter",
+      type: "checking",
+      openingBalance: centavos(50000),
+    });
+    expect(result.ok).toBe(true);
+    const account = useVault.getState().vault.accounts[0];
+    expect(account.name).toBe("Banco Inter");
+    expect(deriveAccountBalance(account, useVault.getState().vault.transactions)).toBe(47500);
+    await vi.waitFor(() => expect(state.saves).toHaveLength(1));
+  });
+
+  it("deletes an Account nothing uses", async () => {
+    const useVault = await store();
+    const added = useVault
+      .getState()
+      .addAccount({ name: "Carteira", type: "cash", openingBalance: centavos(0) });
+    if (!added.ok) throw new Error(added.message);
+    expect(useVault.getState().deleteAccount(added.account.id).ok).toBe(true);
+    expect(useVault.getState().vault.accounts.map((a) => a.name)).toEqual(["Inter"]);
+    await vi.waitFor(() => expect(state.saves).toHaveLength(2));
+  });
+});
+
+describe("marking a whole selection as Transfers", () => {
+  const CHECKING = "acc-checking";
+  const POCKET = "acc-pocket";
+
+  /**
+   * Twenty imported entries on one checking Account — ten `APLICACAO` Expenses
+   * and ten `RESGATE` Incomes of R$ 100,00 each — which is the shape of the real
+   * Vault in miniature: hundreds of entries moving money in and out of an
+   * investment pocket inside the same bank.
+   */
+  async function storeWithManyEntries() {
+    const useVault = await freshStore();
+    state.loadResult = vaultWith({
+      accounts: [
+        { id: CHECKING, name: "Banco Inter", type: "checking", openingBalance: centavos(100000) },
+        { id: POCKET, name: "Inter CDB", type: "savings", openingBalance: centavos(0) },
+      ],
+      transactions: Array.from({ length: 20 }, (_, i) => ({
+        id: `e${i}`,
+        kind: i % 2 === 0 ? ("expense" as const) : ("income" as const),
+        date: "2026-10-02",
+        amount: centavos(10000),
+        description: i % 2 === 0 ? "APLICACAO CDB" : "RESGATE CDB",
+        accountId: CHECKING,
+        categoryId: null,
+        fitid: `FIT-${i}`,
+      })) satisfies Transaction[],
+    });
+    await useVault.getState().init();
+    await vi.waitFor(() => expect(state.inFlight).toBe(0));
+    state.saves = [];
+    return useVault;
+  }
+
+  const ids = Array.from({ length: 20 }, (_, i) => `e${i}`);
+
+  const balanceOf = (
+    useVault: Awaited<ReturnType<typeof freshStore>>,
+    accountId: string,
+  ) => {
+    const vault = useVault.getState().vault;
+    const account = vault.accounts.find((a) => a.id === accountId);
+    if (account === undefined) throw new Error(`no account ${accountId}`);
+    return deriveAccountBalance(account, vault.transactions);
+  };
+
+  /**
+   * The load-bearing invariant, and the reason this action exists at all: one
+   * mutation, so one save, however many entries it converts. A loop over
+   * `markTransactionAsTransfer` would queue twenty whole-vault writes onto the
+   * save chain — the condition that tore the vault before.
+   */
+  it("converts twenty entries in exactly one save", async () => {
+    const useVault = await storeWithManyEntries();
+
+    const result = useVault.getState().markTransactionsAsTransfer(ids, POCKET);
+
+    expect(result).toEqual({ ok: true, converted: 20, skipped: [] });
+    await vi.waitFor(() => expect(state.saves).toHaveLength(1));
+    // Give any stray queued save a chance to show up before claiming there is none.
+    await vi.waitFor(() => expect(state.inFlight).toBe(0));
+    expect(state.saves).toHaveLength(1);
+  });
+
+  it("leaves the Account the entries were imported on exactly where it was", async () => {
+    const useVault = await storeWithManyEntries();
+    // 1000,00 - 10 x 100,00 + 10 x 100,00
+    expect(balanceOf(useVault, CHECKING)).toBe(100000);
+
+    useVault.getState().markTransactionsAsTransfer(ids, POCKET);
+
+    expect(balanceOf(useVault, CHECKING)).toBe(100000);
+    await vi.waitFor(() => expect(state.saves).toHaveLength(1));
+  });
+
+  it("moves the chosen Account by the two directions netted against each other", async () => {
+    const useVault = await storeWithManyEntries();
+
+    useVault.getState().markTransactionsAsTransfer(ids, POCKET);
+
+    // Ten Expenses arrived there and ten Incomes left it: the same money going
+    // back and forth, which is why the pocket ends level.
+    expect(balanceOf(useVault, POCKET)).toBe(0);
+    await vi.waitFor(() => expect(state.saves).toHaveLength(1));
+  });
+
+  it("stops the converted entries counting as Income or Expense", async () => {
+    const useVault = await storeWithManyEntries();
+
+    useVault.getState().markTransactionsAsTransfer(ids, POCKET);
+
+    const transactions = useVault.getState().vault.transactions;
+    expect(transactions).toHaveLength(20);
+    expect(transactions.every((tx) => tx.kind === "transfer")).toBe(true);
+    await vi.waitFor(() => expect(state.saves).toHaveLength(1));
+  });
+
+  it("writes every converted entry to disk with the bank id it was recovered from", async () => {
+    const useVault = await storeWithManyEntries();
+
+    useVault.getState().markTransactionsAsTransfer(ids, POCKET);
+    await vi.waitFor(() => expect(state.saves).toHaveLength(1));
+
+    const onDisk = diskOf(DEFAULT_DIR).transactions as Transaction[];
+    expect(onDisk).toHaveLength(20);
+    expect(onDisk[0]).toMatchObject({
+      kind: "transfer",
+      recoveredFrom: [{ fitid: "FIT-0", accountId: CHECKING }],
+    });
+    expect(onDisk[19]).toMatchObject({
+      recoveredFrom: [{ fitid: "FIT-19", accountId: CHECKING }],
+    });
+  });
+
+  it("converts what it can, names what it skipped, and still saves once", async () => {
+    const useVault = await storeWithManyEntries();
+    // One entry is already a Transfer by the time the batch runs.
+    useVault.getState().markTransactionAsTransfer("e0", POCKET);
+    await vi.waitFor(() => expect(state.saves).toHaveLength(1));
+    state.saves = [];
+
+    const result = useVault.getState().markTransactionsAsTransfer(ids, POCKET);
+
+    expect(result).toMatchObject({
+      ok: true,
+      converted: 19,
+      skipped: [{ transactionId: "e0", message: "Essa transação já é uma transferência." }],
+    });
+    await vi.waitFor(() => expect(state.saves).toHaveLength(1));
+  });
+
+  it("writes nothing when every selected entry is skipped", async () => {
+    const useVault = await storeWithManyEntries();
+    useVault.getState().markTransactionsAsTransfer(ids, POCKET);
+    await vi.waitFor(() => expect(state.saves).toHaveLength(1));
+    state.saves = [];
+
+    // Nothing left to convert: they are all Transfers already.
+    const result = useVault.getState().markTransactionsAsTransfer(ids, POCKET);
+
+    expect(result).toMatchObject({ ok: true, converted: 0 });
+    expect(state.saves).toHaveLength(0);
+  });
+
+  it("refuses an Account the Vault doesn't have and writes nothing", async () => {
+    const useVault = await storeWithManyEntries();
+
+    const result = useVault.getState().markTransactionsAsTransfer(ids, "acc-nope");
+
+    expect(result).toEqual({ ok: false, message: "Conta inexistente." });
+    expect(useVault.getState().vault.transactions[0]).toMatchObject({ kind: "expense" });
+    expect(state.saves).toHaveLength(0);
+  });
+
+  it("re-importing the Statement adds none of the converted entries back", async () => {
+    const useVault = await storeWithManyEntries();
+    useVault.getState().markTransactionsAsTransfer(ids, POCKET);
+    await vi.waitFor(() => expect(state.saves).toHaveLength(1));
+
+    const plan = planImport(
+      ids.map((id, i) => ({
+        fitid: `FIT-${i}`,
+        date: "2026-10-02",
+        amount: i % 2 === 0 ? -10000 : 10000,
+        description: id,
+        trntype: i % 2 === 0 ? "DEBIT" : "CREDIT",
+      })),
+      CHECKING,
+      useVault.getState().vault.transactions,
+    );
+
+    expect(plan.additions).toHaveLength(0);
+    expect(plan.duplicates).toHaveLength(20);
+  });
+});
+
+describe("classification Rules", () => {
+  const INTER = "acc-inter";
+
+  async function storeWithCategories(partial: Partial<Vault> = {}) {
+    const useVault = await freshStore();
+    state.loadResult = vaultWith({
+      accounts: [
+        { id: INTER, name: "Banco Inter", type: "checking", openingBalance: centavos(0) },
+      ],
+      groups: [
+        { id: "g-food", name: "Alimentação", kind: "expense" },
+        { id: "g-in", name: "Renda", kind: "income" },
+      ],
+      categories: [
+        { id: "cat-restaurant", name: "Restaurantes", groupId: "g-food" },
+        { id: "cat-market", name: "Mercado", groupId: "g-food" },
+        { id: "cat-salary", name: "Salário", groupId: "g-in" },
+      ],
+      ...partial,
+    });
+    await useVault.getState().init();
+    await vi.waitFor(() => expect(state.inFlight).toBe(0));
+    state.saves = [];
+    return useVault;
+  }
+
+  const entry = (id: string, description: string, categoryId: string | null = null): Transaction => ({
+    id,
+    kind: "expense",
+    date: "2026-10-02",
+    amount: centavos(5000),
+    description,
+    accountId: INTER,
+    categoryId,
+    fitid: `FIT-${id}`,
+  });
+
+  const txById = (
+    useVault: Awaited<ReturnType<typeof freshStore>>,
+    id: string,
+  ) => useVault.getState().vault.transactions.find((t) => t.id === id);
+
+  it("adds a Rule and writes it to its own file", async () => {
+    const useVault = await storeWithCategories();
+
+    const outcome = useVault.getState().addRule({
+      pattern: "IFOOD",
+      categoryId: "cat-restaurant",
+    });
+
+    expect(outcome.ok).toBe(true);
+    await vi.waitFor(() => expect(state.saves).toHaveLength(1));
+    expect(diskOf(DEFAULT_DIR).rules).toMatchObject([
+      { pattern: "IFOOD", categoryId: "cat-restaurant", kind: "expense" },
+    ]);
+  });
+
+  it("writes nothing when a Rule is refused", async () => {
+    const useVault = await storeWithCategories();
+
+    const outcome = useVault.getState().addRule({ pattern: " ", categoryId: "cat-market" });
+
+    expect(outcome.ok).toBe(false);
+    expect(useVault.getState().vault.rules).toEqual([]);
+    expect(state.saves).toHaveLength(0);
+  });
+
+  it("edits, reorders and deletes a Rule, persisting each time", async () => {
+    const useVault = await storeWithCategories();
+    const first = useVault.getState().addRule({ pattern: "food", categoryId: "cat-market" });
+    const second = useVault
+      .getState()
+      .addRule({ pattern: "ifood", categoryId: "cat-restaurant" });
+    expect(first.ok && second.ok).toBe(true);
+    if (!first.ok || !second.ok) return;
+    await vi.waitFor(() => expect(state.saves).toHaveLength(2));
+    state.saves = [];
+
+    expect(useVault.getState().editRule(second.rule.id, {
+      pattern: "ifood com",
+      categoryId: "cat-restaurant",
+    })).toEqual({ ok: true });
+    await vi.waitFor(() => expect(state.saves).toHaveLength(1));
+
+    expect(useVault.getState().moveRule(second.rule.id, -1)).toEqual({ ok: true });
+    expect(useVault.getState().vault.rules.map((r) => r.pattern)).toEqual([
+      "ifood com",
+      "food",
+    ]);
+    await vi.waitFor(() => expect(state.saves).toHaveLength(2));
+
+    expect(useVault.getState().deleteRule(first.rule.id)).toEqual({ ok: true });
+    expect(useVault.getState().vault.rules).toHaveLength(1);
+    await vi.waitFor(() => expect(state.saves).toHaveLength(3));
+  });
+
+  it("deleting a Rule leaves the Transactions it classified as they were", async () => {
+    const useVault = await storeWithCategories({
+      transactions: [entry("e1", "IFOOD *IFOOD COM")],
+    });
+    const added = useVault.getState().addRule({
+      pattern: "ifood",
+      categoryId: "cat-restaurant",
+    });
+    expect(added.ok).toBe(true);
+    if (!added.ok) return;
+    useVault.getState().applyRulesToUncategorized();
+    await vi.waitFor(() => expect(state.saves).toHaveLength(2));
+
+    useVault.getState().deleteRule(added.rule.id);
+
+    expect(txById(useVault, "e1")).toMatchObject({
+      categoryId: "cat-restaurant",
+      ruleId: added.rule.id,
+    });
+    // Every mutating test has to wait for its own save, or it leaks into the
+    // next test's count: `state.saves` is module state reset per test.
+    await vi.waitFor(() => expect(state.saves).toHaveLength(3));
+  });
+
+  describe("applying the Rules to the backlog", () => {
+    async function storeWithBacklog() {
+      const useVault = await storeWithCategories({
+        transactions: Array.from({ length: 30 }, (_, i) =>
+          entry(`e${i}`, i < 20 ? `IFOOD PEDIDO ${i}` : `PADARIA ${i}`),
+        ),
+      });
+      const added = useVault.getState().addRule({
+        pattern: "ifood",
+        categoryId: "cat-restaurant",
+      });
+      if (!added.ok) throw new Error(added.message);
+      await vi.waitFor(() => expect(state.saves).toHaveLength(1));
+      state.saves = [];
+      return { useVault, ruleId: added.rule.id };
+    }
+
+    /**
+     * The load-bearing invariant again: one mutation, so one save, however many
+     * Transactions the Rules classify.
+     */
+    it("classifies twenty Transactions in exactly one save", async () => {
+      const { useVault } = await storeWithBacklog();
+
+      expect(useVault.getState().applyRulesToUncategorized()).toEqual({ applied: 20 });
+
+      await vi.waitFor(() => expect(state.saves).toHaveLength(1));
+      await vi.waitFor(() => expect(state.inFlight).toBe(0));
+      expect(state.saves).toHaveLength(1);
+    });
+
+    it("matches the count the preview promised", async () => {
+      const { useVault } = await storeWithBacklog();
+      const preview = pendingRuleCount(useVault.getState().vault);
+
+      const { applied } = useVault.getState().applyRulesToUncategorized();
+
+      expect(applied).toBe(preview);
+      await vi.waitFor(() => expect(state.saves).toHaveLength(1));
+    });
+
+    it("records which Rule classified each Transaction", async () => {
+      const { useVault, ruleId } = await storeWithBacklog();
+
+      useVault.getState().applyRulesToUncategorized();
+
+      expect(txById(useVault, "e0")).toMatchObject({
+        categoryId: "cat-restaurant",
+        ruleId,
+      });
+      await vi.waitFor(() => expect(state.saves).toHaveLength(1));
+    });
+
+    it("leaves what matched nothing Uncategorized", async () => {
+      const { useVault } = await storeWithBacklog();
+
+      useVault.getState().applyRulesToUncategorized();
+
+      expect(txById(useVault, "e25")).toMatchObject({ categoryId: null });
+      await vi.waitFor(() => expect(state.saves).toHaveLength(1));
+    });
+
+    it("writes nothing on a second pass, because there is nothing left to do", async () => {
+      const { useVault } = await storeWithBacklog();
+      useVault.getState().applyRulesToUncategorized();
+      await vi.waitFor(() => expect(state.saves).toHaveLength(1));
+      state.saves = [];
+
+      expect(useVault.getState().applyRulesToUncategorized()).toEqual({ applied: 0 });
+
+      expect(state.saves).toHaveLength(0);
+    });
+
+    it("never overrules a Category the user set by hand", async () => {
+      const useVault = await storeWithCategories({
+        transactions: [entry("e1", "IFOOD PEDIDO", "cat-market")],
+      });
+      useVault.getState().addRule({ pattern: "ifood", categoryId: "cat-restaurant" });
+      await vi.waitFor(() => expect(state.saves).toHaveLength(1));
+      state.saves = [];
+
+      expect(useVault.getState().applyRulesToUncategorized()).toEqual({ applied: 0 });
+
+      expect(txById(useVault, "e1")).toMatchObject({ categoryId: "cat-market" });
+      expect(state.saves).toHaveLength(0);
+    });
+  });
+
+  describe("an Import with Rules in the vault", () => {
+    const statementEntry = (fitid: string, description: string) => ({
+      fitid,
+      date: "2026-10-02",
+      amount: -5000,
+      description,
+      trntype: "DEBIT",
+    });
+
+    it("classifies the additions in the same single save", async () => {
+      const useVault = await storeWithCategories();
+      useVault.getState().addRule({ pattern: "ifood", categoryId: "cat-restaurant" });
+      await vi.waitFor(() => expect(state.saves).toHaveLength(1));
+      state.saves = [];
+
+      const plan = planImport(
+        [
+          statementEntry("F1", "IFOOD *IFOOD COM AGEN"),
+          statementEntry("F2", "IFOOD *PEDIDO 22"),
+          statementEntry("F3", "PADARIA DO ZE"),
+        ],
+        INTER,
+        [],
+      );
+      const report = useVault.getState().commitImport({ plan, fileName: "extrato.ofx" });
+
+      expect(report).toEqual({ added: 3, classified: 2 });
+      await vi.waitFor(() => expect(state.saves).toHaveLength(1));
+      await vi.waitFor(() => expect(state.inFlight).toBe(0));
+      expect(state.saves).toHaveLength(1);
+
+      const classified = useVault
+        .getState()
+        .vault.transactions.filter((tx) => tx.kind !== "transfer" && tx.categoryId !== null);
+      expect(classified).toHaveLength(2);
+    });
+
+    it("imports exactly as before when the vault has no Rules", async () => {
+      const useVault = await storeWithCategories();
+
+      const plan = planImport([statementEntry("F1", "IFOOD *IFOOD")], INTER, []);
+      const report = useVault.getState().commitImport({ plan, fileName: "extrato.ofx" });
+
+      expect(report).toEqual({ added: 1, classified: 0 });
+      expect(useVault.getState().vault.transactions[0]).toMatchObject({ categoryId: null });
+      await vi.waitFor(() => expect(state.saves).toHaveLength(1));
+    });
+  });
+
+  it("forgets the Rule when the user reclassifies by hand", async () => {
+    const useVault = await storeWithCategories({
+      transactions: [entry("e1", "IFOOD PEDIDO")],
+    });
+    useVault.getState().addRule({ pattern: "ifood", categoryId: "cat-restaurant" });
+    useVault.getState().applyRulesToUncategorized();
+    await vi.waitFor(() => expect(state.saves).toHaveLength(2));
+    expect(txById(useVault, "e1")).toHaveProperty("ruleId");
+
+    useVault.getState().setTransactionCategory("e1", "cat-market");
+
+    expect(txById(useVault, "e1")).toMatchObject({ categoryId: "cat-market" });
+    expect(txById(useVault, "e1")).not.toHaveProperty("ruleId");
+    await vi.waitFor(() => expect(state.saves).toHaveLength(3));
   });
 });

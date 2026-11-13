@@ -128,3 +128,16 @@ export function monthsWithTransactions(vault: Vault): MonthKey[] {
   for (const tx of vault.transactions) months.add(monthKey(tx.date));
   return [...months].sort().reverse();
 }
+
+/**
+ * How many Transactions still have no Category — the backlog both the
+ * Transactions page's badge and the Rules page's counter describe, counted
+ * once so the two can never disagree about how much work is left.
+ */
+export function uncategorizedCount(vault: Vault): number {
+  let count = 0;
+  for (const tx of vault.transactions) {
+    if (tx.kind !== "transfer" && tx.categoryId === null) count += 1;
+  }
+  return count;
+}

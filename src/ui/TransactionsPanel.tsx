@@ -1,16 +1,26 @@
 import { type FormEvent, useMemo, useState } from "react";
+import { categoryTree, treeHas } from "../domain/categories";
+import { suggestCategories } from "../domain/categorySuggestions";
+import { ruleOfferFor } from "../domain/classificationRules";
+import { formatDateBR } from "../domain/dates";
 import { formatBRL, parseBRL } from "../domain/money";
+import { markingPreview, selectedDescriptions, selectedKind } from "../domain/selection";
 import {
   NO_FILTER,
   type TransactionFilter,
   monthsWithTransactions,
   selectTransactions,
+  uncategorizedCount,
 } from "../domain/transactionQuery";
-import type { Category, Id, Transaction } from "../domain/types";
+import { canUndoMarking } from "../domain/transferRecovery";
+import type { Id, Transaction } from "../domain/types";
 import { useVault } from "../store/useVault";
-import { BulkClassifyBar } from "./BulkClassifyBar";
+import { BulkActionsBar } from "./BulkActionsBar";
+import { RuleOfferForm } from "./RuleOfferForm";
+import { CategoryOptions, type CategoryTree } from "./CategoryOptions";
 import { TransactionEditForm } from "./TransactionEditForm";
 import { TransactionFilters } from "./TransactionFilters";
+import { TransferCandidates } from "./TransferCandidates";
 import { TransferMarkForm } from "./TransferMarkForm";
 import { todayISO } from "./labels";
 
@@ -33,7 +43,10 @@ export function TransactionsPanel() {
   const editTransaction = useVault((s) => s.editTransaction);
   const deleteTransaction = useVault((s) => s.deleteTransaction);
   const markTransactionAsTransfer = useVault((s) => s.markTransactionAsTransfer);
+  const markTransactionsAsTransfer = useVault((s) => s.markTransactionsAsTransfer);
+  const addRule = useVault((s) => s.addRule);
   const revertTransferToEntry = useVault((s) => s.revertTransferToEntry);
+  const applySuggestedCategories = useVault((s) => s.applySuggestedCategories);
 
   const [kind, setKind] = useState<Kind>("expense");
   const [date, setDate] = useState(todayISO());
@@ -54,6 +67,16 @@ export function TransactionsPanel() {
   const [markingId, setMarkingId] = useState<Id | null>(null);
   /** A refusal that has no form of its own to show it, shown on its row. */
   const [rowError, setRowError] = useState<{ id: Id; message: string } | null>(null);
+  /**
+   * What the last bulk action did. It outlives the selection on purpose: the
+   * selection is cleared by the action, so a message living in the bar would
+   * disappear with the bar that reported it.
+   */
+  const [bulkNotice, setBulkNotice] = useState<string | null>(null);
+  /** A Rule the app is offering to remember, from classification just done by hand. */
+  const [ruleOffer, setRuleOffer] = useState<{ pattern: string; categoryId: Id } | null>(
+    null,
+  );
 
   /**
    * A new filter is a new result set, so the page the user was on no longer
@@ -71,6 +94,8 @@ export function TransactionsPanel() {
     setDeletingId(null);
     setMarkingId(null);
     setRowError(null);
+    setBulkNotice(null);
+    setRuleOffer(null);
   }
 
   /** Open one row's form, closing anything else that was open. */
@@ -109,19 +134,27 @@ export function TransactionsPanel() {
     () => new Map(vault.categories.map((c) => [c.id, c.name])),
     [vault.categories],
   );
+  const rulePattern = useMemo(
+    () => new Map(vault.rules.map((r) => [r.id, r.pattern])),
+    [vault.rules],
+  );
 
-  /** Categories split by the kind of transaction they can classify. */
-  const categoriesByKind = useMemo(() => {
-    const groupKind = new Map(vault.groups.map((g) => [g.id, g.kind]));
-    const byKind: Record<"income" | "expense", Category[]> = { income: [], expense: [] };
-    for (const category of vault.categories) {
-      const k = groupKind.get(category.groupId);
-      if (k) byKind[k].push(category);
-    }
-    return byKind;
-  }, [vault.groups, vault.categories]);
+  /** Categories split by the kind of transaction they can classify, under their Groups. */
+  const treesByKind = useMemo<Record<"income" | "expense", CategoryTree>>(
+    () => ({ income: categoryTree(vault, "income"), expense: categoryTree(vault, "expense") }),
+    [vault],
+  );
 
-  const categoryOptions = kind === "transfer" ? [] : categoriesByKind[kind];
+  /**
+   * Income and expense Categories are separate sets, so a Category picked for
+   * one kind is cleared when the kind changes. Keeping it is how an Income used
+   * to be saved under an expense Category: the select showed nothing chosen,
+   * but the stale id was still there and went with the submit.
+   */
+  function changeKind(next: Kind) {
+    setKind(next);
+    if (next === "transfer" || !treeHas(treesByKind[next], categoryId)) setCategoryId("");
+  }
 
   const months = useMemo(() => monthsWithTransactions(vault), [vault]);
   const selection = useMemo(() => selectTransactions(vault, filter), [vault, filter]);
@@ -143,29 +176,78 @@ export function TransactionsPanel() {
   const allSelected =
     selectableIds.length > 0 && selectableIds.every((id) => selected.has(id));
 
-  /**
-   * The kind every selected Transaction shares, or "mixed" when the selection
-   * spans both — income and expense Categories are separate, so a mixed
-   * selection has no Category that could apply to all of it.
-   */
-  const selectedKind = useMemo(() => {
-    let kind: "income" | "expense" | null = null;
-    for (const tx of vault.transactions) {
-      if (tx.kind === "transfer" || !selected.has(tx.id)) continue;
-      if (kind === null) kind = tx.kind;
-      else if (kind !== tx.kind) return "mixed" as const;
-    }
-    return kind;
-  }, [vault.transactions, selected]);
+  /** The selection's shared kind, answered by the domain (see domain/selection). */
+  const kindOfSelection = useMemo(() => selectedKind(vault, selected), [vault, selected]);
 
   function assignToSelected(categoryId: Id) {
+    // Read the descriptions before the selection is cleared: they are what the
+    // offered Rule is guessed from.
+    const descriptions = selectedDescriptions(vault, selected);
+
     setTransactionCategoryMany([...selected], categoryId);
+    setSelected(new Set());
+    setBulkNotice(null);
+    setRuleOffer(ruleOfferFor(vault, descriptions, categoryId));
+  }
+
+  function acceptRuleOffer(pattern: string) {
+    if (ruleOffer === null) return;
+    const outcome = addRule({ pattern, categoryId: ruleOffer.categoryId });
+    setRuleOffer(null);
+    setBulkNotice(
+      outcome.ok
+        ? `Regra criada: descrições com “${pattern}” vão para ${
+            categoryName.get(ruleOffer.categoryId) ?? "essa categoria"
+          }. Aplique-a ao resto na página Regras.`
+        : outcome.message,
+    );
+  }
+
+  function markSelectedAsTransfers(otherAccountId: Id) {
+    const result = markTransactionsAsTransfer([...selected], otherAccountId);
+    if (!result.ok) return setBulkNotice(result.message);
+
+    // Every skip is named, not just counted: a batch chosen by description can
+    // sweep in an entry that cannot convert, and a count alone would leave the
+    // user believing their whole selection moved.
+    const reasons = [...new Set(result.skipped.map((s) => s.message))];
+    const converted =
+      result.converted === 1
+        ? "1 lançamento virou transferência."
+        : `${result.converted} lançamentos viraram transferências.`;
+    setBulkNotice(
+      result.skipped.length === 0
+        ? converted
+        : `${converted} ${result.skipped.length} ignorado${
+            result.skipped.length === 1 ? "" : "s"
+          }: ${reasons.join(" ")}`,
+    );
     setSelected(new Set());
   }
 
-  const uncategorizedCount = vault.transactions.filter(
-    (tx) => tx.kind !== "transfer" && tx.categoryId === null,
-  ).length;
+  const pendingCategories = uncategorizedCount(vault);
+
+  /**
+   * What the user's own frequent decisions suggest for the backlog: by
+   * Transaction id, so each uncategorized row can show its own offer. Derived
+   * from the vault like every other read here, and applied through the store so
+   * accepting is the same write path as classifying by hand.
+   */
+  const suggestionFor = useMemo(
+    () => new Map(suggestCategories(vault).map((s) => [s.transactionId, s])),
+    [vault],
+  );
+
+  function applyAllSuggestions() {
+    const { applied } = applySuggestedCategories();
+    setBulkNotice(
+      applied === 0
+        ? "Nenhuma sugestão para aplicar."
+        : applied === 1
+          ? "1 transação categorizada a partir das suas decisões anteriores."
+          : `${applied} transações categorizadas a partir das suas decisões anteriores.`,
+    );
+  }
 
   function submit(e: FormEvent) {
     e.preventDefault();
@@ -179,17 +261,17 @@ export function TransactionsPanel() {
     }
     if (!accountId) return setError("Escolha uma conta.");
 
+    let result;
     if (kind === "transfer") {
       if (!toAccountId) return setError("Escolha a conta de destino.");
-      if (toAccountId === accountId)
-        return setError("Origem e destino devem ser diferentes.");
-      addTransfer({ date, amount: value, fromAccountId: accountId, toAccountId, description });
+      result = addTransfer({ date, amount: value, fromAccountId: accountId, toAccountId, description });
     } else {
       if (!categoryId) return setError("Escolha uma categoria.");
       const payload = { date, amount: value, accountId, categoryId, description };
-      if (kind === "income") addIncome(payload);
-      else addExpense(payload);
+      result = kind === "income" ? addIncome(payload) : addExpense(payload);
     }
+    // The domain has the last word; a refusal keeps what was typed so it can be fixed.
+    if (!result.ok) return setError(result.message);
     setAmount("");
     setDescription("");
   }
@@ -203,35 +285,65 @@ export function TransactionsPanel() {
         <h2 className="text-lg font-semibold text-slate-800 dark:text-slate-100">
           Transações
         </h2>
-        {uncategorizedCount > 0 && (
-          <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-300">
-            {uncategorizedCount} sem categoria
+        {pendingCategories > 0 && (
+          <span className="flex items-center gap-2">
+            <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+              {pendingCategories} sem categoria
+            </span>
+            {suggestionFor.size > 0 && (
+              <button
+                type="button"
+                className="rounded-full bg-sky-100 px-2 py-0.5 text-xs text-sky-800 underline hover:bg-sky-200 dark:bg-sky-950 dark:text-sky-300 dark:hover:bg-sky-900"
+                onClick={applyAllSuggestions}
+              >
+                aplicar {suggestionFor.size === 1 ? "1 sugestão" : `${suggestionFor.size} sugestões`}
+              </button>
+            )}
           </span>
         )}
       </div>
 
       <form onSubmit={submit} className="mb-4 grid grid-cols-2 gap-2">
-        <select className={inputClass} value={kind} onChange={(e) => setKind(e.target.value as Kind)}>
+        <select
+          aria-label="Nova transação: tipo"
+          className={inputClass}
+          value={kind}
+          onChange={(e) => changeKind(e.target.value as Kind)}
+        >
           <option value="expense">Despesa</option>
           <option value="income">Receita</option>
           <option value="transfer">Transferência</option>
         </select>
-        <input className={inputClass} type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+        <input
+          aria-label="Nova transação: data"
+          className={inputClass}
+          type="date"
+          value={date}
+          onChange={(e) => setDate(e.target.value)}
+        />
 
         <input
+          aria-label="Nova transação: valor"
           className={`${inputClass} text-right`}
           placeholder="Valor (ex: 49,90)"
+          inputMode="decimal"
           value={amount}
           onChange={(e) => setAmount(e.target.value)}
         />
         <input
+          aria-label="Nova transação: descrição"
           className={inputClass}
           placeholder="Descrição"
           value={description}
           onChange={(e) => setDescription(e.target.value)}
         />
 
-        <select className={inputClass} value={accountId} onChange={(e) => setAccountId(e.target.value)}>
+        <select
+          aria-label={kind === "transfer" ? "Nova transação: conta de origem" : "Nova transação: conta"}
+          className={inputClass}
+          value={accountId}
+          onChange={(e) => setAccountId(e.target.value)}
+        >
           <option value="">{kind === "transfer" ? "Conta de origem" : "Conta"}</option>
           {vault.accounts.map((a) => (
             <option key={a.id} value={a.id}>{a.name}</option>
@@ -239,18 +351,26 @@ export function TransactionsPanel() {
         </select>
 
         {kind === "transfer" ? (
-          <select className={inputClass} value={toAccountId} onChange={(e) => setToAccountId(e.target.value)}>
+          <select
+            aria-label="Nova transação: conta de destino"
+            className={inputClass}
+            value={toAccountId}
+            onChange={(e) => setToAccountId(e.target.value)}
+          >
             <option value="">Conta de destino</option>
             {vault.accounts.map((a) => (
               <option key={a.id} value={a.id}>{a.name}</option>
             ))}
           </select>
         ) : (
-          <select className={inputClass} value={categoryId} onChange={(e) => setCategoryId(e.target.value)}>
+          <select
+            aria-label="Nova transação: categoria"
+            className={inputClass}
+            value={categoryId}
+            onChange={(e) => setCategoryId(e.target.value)}
+          >
             <option value="">Categoria</option>
-            {categoryOptions.map((c) => (
-              <option key={c.id} value={c.id}>{c.name}</option>
-            ))}
+            <CategoryOptions tree={treesByKind[kind]} />
           </select>
         )}
 
@@ -263,11 +383,13 @@ export function TransactionsPanel() {
         {error && <p className="col-span-2 text-xs text-red-600">{error}</p>}
       </form>
 
+      <TransferCandidates />
+
       <TransactionFilters
         filter={filter}
         onChange={changeFilter}
         accounts={vault.accounts}
-        categories={vault.categories}
+        treesByKind={treesByKind}
         months={months}
       />
 
@@ -296,14 +418,35 @@ export function TransactionsPanel() {
         </label>
       )}
 
-      {selected.size > 0 && selectedKind !== null && (
-        <BulkClassifyBar
+      {selected.size > 0 && kindOfSelection !== null && (
+        <BulkActionsBar
           selectedCount={selected.size}
-          kind={selectedKind}
-          categories={selectedKind === "mixed" ? [] : categoriesByKind[selectedKind]}
+          kind={kindOfSelection}
+          tree={kindOfSelection === "mixed" ? [] : treesByKind[kindOfSelection]}
+          accounts={vault.accounts}
+          previewFor={(otherAccountId) => markingPreview(vault, [...selected], otherAccountId)}
           onAssign={assignToSelected}
+          onMarkTransfers={markSelectedAsTransfers}
           onClear={() => setSelected(new Set())}
         />
+      )}
+
+      {ruleOffer !== null && (
+        <RuleOfferForm
+          suggested={ruleOffer.pattern}
+          categoryName={categoryName.get(ruleOffer.categoryId) ?? "essa categoria"}
+          onAccept={acceptRuleOffer}
+          onDecline={() => setRuleOffer(null)}
+        />
+      )}
+
+      {bulkNotice !== null && (
+        <p
+          className="mb-3 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+          role="status"
+        >
+          {bulkNotice}
+        </p>
       )}
 
       <ul className="divide-y divide-slate-100 text-sm dark:divide-slate-700">
@@ -320,7 +463,7 @@ export function TransactionsPanel() {
               <TransactionEditForm
                 transaction={tx}
                 accounts={vault.accounts}
-                categoriesByKind={categoriesByKind}
+                treesByKind={treesByKind}
                 onSave={(changes) => {
                   const result = editTransaction(tx.id, changes);
                   // A refused edit keeps the form open with its message showing.
@@ -346,7 +489,7 @@ export function TransactionsPanel() {
                 {/* Naming the Transaction is what makes this a confirmation and
                     not just a second click. */}
                 <span className="text-slate-700 dark:text-slate-200">
-                  Excluir “{tx.description || "(sem descrição)"}” de {tx.date},{" "}
+                  Excluir “{tx.description || "(sem descrição)"}” de {formatDateBR(tx.date)},{" "}
                   <span className="font-mono">{formatBRL(tx.amount)}</span>?
                 </span>
                 <button
@@ -388,13 +531,13 @@ export function TransactionsPanel() {
               <div className="text-xs text-slate-500">
                 {tx.kind === "transfer" ? (
                   <>
-                    {tx.date} · {accountName.get(tx.fromAccountId) ?? "?"} →{" "}
+                    {formatDateBR(tx.date)} · {accountName.get(tx.fromAccountId) ?? "?"} →{" "}
                     {accountName.get(tx.toAccountId) ?? "?"}
                   </>
                 ) : tx.categoryId === null ? (
                   // Imported transactions arrive uncategorized; classify them here.
                   <span className="flex items-center gap-1">
-                    {tx.date} ·
+                    {formatDateBR(tx.date)} ·
                     <select
                       aria-label={`Categoria de ${tx.description || "transação sem descrição"}`}
                       className="rounded border border-amber-400 bg-amber-50 px-1 py-0.5 text-xs text-amber-900 dark:bg-amber-950 dark:text-amber-200"
@@ -404,16 +547,38 @@ export function TransactionsPanel() {
                       }
                     >
                       <option value="">Sem categoria</option>
-                      {categoriesByKind[tx.kind].map((c) => (
-                        <option key={c.id} value={c.id}>{c.name}</option>
-                      ))}
+                      <CategoryOptions tree={treesByKind[tx.kind]} />
                     </select>
+                    {/* The Category the user's own repeated decisions point to;
+                        one click accepts it through the same write classifying
+                        by hand uses. */}
+                    {suggestionFor.has(tx.id) && (
+                      <button
+                        type="button"
+                        aria-label={`Aceitar sugestão para ${tx.description || "transação sem descrição"}`}
+                        className="rounded border border-sky-300 bg-sky-50 px-1 py-0.5 text-xs text-sky-900 hover:bg-sky-100 dark:border-sky-800 dark:bg-sky-950 dark:text-sky-200 dark:hover:bg-sky-900"
+                        onClick={() => {
+                          const suggestion = suggestionFor.get(tx.id);
+                          if (suggestion !== undefined)
+                            setTransactionCategory(tx.id, suggestion.categoryId);
+                        }}
+                      >
+                        sugestão: {categoryName.get(suggestionFor.get(tx.id)?.categoryId ?? "") ?? "?"}
+                      </button>
+                    )}
                     · {accountName.get(tx.accountId) ?? "?"}
                   </span>
                 ) : (
                   <>
-                    {tx.date} · {categoryName.get(tx.categoryId) ?? "?"} ·{" "}
+                    {formatDateBR(tx.date)} · {categoryName.get(tx.categoryId) ?? "?"} ·{" "}
                     {accountName.get(tx.accountId) ?? "?"}
+                    {/* Which Rule did this, so a surprising Category is traceable
+                        to the thing that caused it. A Rule since deleted leaves
+                        the Category alone, and says so rather than nothing. */}
+                    {tx.ruleId !== undefined &&
+                      (rulePattern.has(tx.ruleId)
+                        ? ` · regra “${rulePattern.get(tx.ruleId)}”`
+                        : " · por uma regra já excluída")}
                   </>
                 )}
               </div>
@@ -435,7 +600,7 @@ export function TransactionsPanel() {
                 // Only a Transfer recovered from a single imported entry knows
                 // what to go back to; one the user typed has no earlier entry,
                 // and one recovered from both sides belongs to the pair list.
-                tx.recoveredFrom?.length === 1 && (
+                canUndoMarking(tx) && (
                   <button
                     type="button"
                     aria-label={`Desfazer transferência ${tx.description || "sem descrição"}`}

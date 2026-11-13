@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { centavos } from "./money";
-import { entryFromTransfer, transferFromEntry } from "./transferRecovery";
+import {
+  entryFromTransfer,
+  transferFromEntry,
+  transfersFromEntries,
+} from "./transferRecovery";
 import type { Transaction, Vault } from "./types";
 import { emptyVault } from "./types";
 
@@ -312,5 +316,129 @@ describe("entryFromTransfer", () => {
     const outcome = entryFromTransfer(vaultWith([expense()]), "tx-nope");
 
     expect(outcome).toEqual({ ok: false, message: "Transação não encontrada." });
+  });
+});
+
+describe("transfersFromEntries", () => {
+  it("marks every selected entry against the same other Account", () => {
+    const vault = vaultWith([
+      expense({ id: "tx-1" }),
+      expense({ id: "tx-2", fitid: "FIT-2" }),
+      income({ id: "tx-3" }),
+    ]);
+
+    const outcome = transfersFromEntries(vault, ["tx-1", "tx-2", "tx-3"], POCKET);
+
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.skipped).toEqual([]);
+    expect(outcome.transfers.map((tx) => tx.id)).toEqual(["tx-1", "tx-2", "tx-3"]);
+    expect(outcome.transfers.every((tx) => tx.kind === "transfer")).toBe(true);
+  });
+
+  it("takes each entry's direction from its own kind, so a mixed selection is fine", () => {
+    const vault = vaultWith([expense({ id: "tx-1" }), income({ id: "tx-3" })]);
+
+    const outcome = transfersFromEntries(vault, ["tx-1", "tx-3"], POCKET);
+
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.transfers).toMatchObject([
+      { id: "tx-1", fromAccountId: CHECKING, toAccountId: POCKET },
+      { id: "tx-3", fromAccountId: POCKET, toAccountId: CHECKING },
+    ]);
+  });
+
+  it("keeps the bank's id of every converted entry, so a re-import still skips it", () => {
+    const vault = vaultWith([
+      expense({ id: "tx-1", fitid: "FIT-1" }),
+      expense({ id: "tx-2", fitid: "FIT-2" }),
+    ]);
+
+    const outcome = transfersFromEntries(vault, ["tx-1", "tx-2"], POCKET);
+
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.transfers).toMatchObject([
+      { recoveredFrom: [{ fitid: "FIT-1", accountId: CHECKING }] },
+      { recoveredFrom: [{ fitid: "FIT-2", accountId: CHECKING }] },
+    ]);
+  });
+
+  it("converts what it can and reports what it cannot, rather than refusing the batch", () => {
+    const vault = vaultWith([
+      expense({ id: "tx-1" }),
+      // Already on the chosen Account: money that left and arrived there never
+      // moved between two Accounts.
+      expense({ id: "tx-2", accountId: POCKET }),
+      expense({ id: "tx-3", fitid: "FIT-3" }),
+    ]);
+
+    const outcome = transfersFromEntries(vault, ["tx-1", "tx-2", "tx-3"], POCKET);
+
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.transfers.map((tx) => tx.id)).toEqual(["tx-1", "tx-3"]);
+    expect(outcome.skipped).toEqual([
+      {
+        transactionId: "tx-2",
+        message: "Escolha uma conta diferente da do lançamento.",
+      },
+    ]);
+  });
+
+  it("skips an entry that is already a Transfer", () => {
+    const vault = vaultWith([
+      expense({ id: "tx-1" }),
+      {
+        id: "tx-2",
+        kind: "transfer",
+        date: "2026-03-10",
+        amount: centavos(150_00),
+        description: "APLICACAO CDB",
+        fromAccountId: CHECKING,
+        toAccountId: POCKET,
+      },
+    ]);
+
+    const outcome = transfersFromEntries(vault, ["tx-1", "tx-2"], POCKET);
+
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.transfers.map((tx) => tx.id)).toEqual(["tx-1"]);
+    expect(outcome.skipped).toEqual([
+      { transactionId: "tx-2", message: "Essa transação já é uma transferência." },
+    ]);
+  });
+
+  it("converts an id listed twice exactly once", () => {
+    const outcome = transfersFromEntries(
+      vaultWith([expense({ id: "tx-1" })]),
+      ["tx-1", "tx-1"],
+      POCKET,
+    );
+
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.transfers.map((tx) => tx.id)).toEqual(["tx-1"]);
+  });
+
+  it("refuses the whole batch when the other Account doesn't exist", () => {
+    const outcome = transfersFromEntries(
+      vaultWith([expense()]),
+      ["tx-1"],
+      "acc-nope",
+    );
+
+    expect(outcome).toEqual({ ok: false, message: "Conta inexistente." });
+  });
+
+  it("refuses an empty selection", () => {
+    const outcome = transfersFromEntries(vaultWith([expense()]), [], POCKET);
+
+    expect(outcome).toEqual({
+      ok: false,
+      message: "Selecione pelo menos um lançamento.",
+    });
   });
 });

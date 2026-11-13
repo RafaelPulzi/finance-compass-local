@@ -1,16 +1,7 @@
 import { join } from "@tauri-apps/api/path";
-import { exists, mkdir, readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
-import type {
-  Account,
-  Budget,
-  Category,
-  DismissedTransferPair,
-  Group,
-  ImportRecord,
-  Transaction,
-  Vault,
-} from "../domain/types";
-import { VAULT_SCHEMA_VERSION } from "../domain/types";
+import { exists, mkdir, readTextFile, rename, writeTextFile } from "@tauri-apps/plugin-fs";
+import type { Vault, VaultCollection } from "../domain/types";
+import { VAULT_COLLECTIONS, VAULT_SCHEMA_VERSION } from "../domain/types";
 import { type VaultRepository, parseVault } from "./repository";
 import { VAULT_MARKER } from "./vaultLocation";
 
@@ -22,18 +13,28 @@ import { VAULT_MARKER } from "./vaultLocation";
  * Note that a save writes several files in sequence. Two overlapping saves would
  * interleave and tear the vault, so callers must serialize them — `useVault`
  * does, through its save chain.
+ *
+ * Each file is replaced atomically: the new contents go to a `.tmp` sibling,
+ * which is then renamed over the real file. Writing in place truncates the file
+ * first, so a crash or power cut mid-write would leave `transactions.json` cut
+ * in half — unparseable, and with it the whole vault. With the rename, a file is
+ * always either its old version or its new one.
  */
 
-const NAMES = {
-  meta: VAULT_MARKER,
+/** Each collection's file in the vault folder. `Record` keeps it total: a new
+ * collection in `VAULT_COLLECTIONS` refuses to compile until it has a file. */
+const COLLECTION_FILES: Record<VaultCollection, string> = {
   accounts: "accounts.json",
   groups: "groups.json",
   categories: "categories.json",
+  rules: "rules.json",
   transactions: "transactions.json",
   budgets: "budgets.json",
   imports: "imports.json",
   dismissedTransferPairs: "dismissed-transfers.json",
-} as const;
+};
+
+const NAMES = { meta: VAULT_MARKER, ...COLLECTION_FILES } as const;
 
 type FilePaths = Record<keyof typeof NAMES, string>;
 
@@ -67,11 +68,24 @@ export function createTauriRepository(
 
   async function readJson<T>(path: string, fallback: T): Promise<T> {
     if (!(await exists(path))) return fallback;
-    return JSON.parse(await readTextFile(path)) as T;
+    const text = await readTextFile(path);
+    try {
+      return JSON.parse(text) as T;
+    } catch {
+      // A bare SyntaxError ("Unexpected token } in JSON at position 48113")
+      // tells the user nothing about which of eight files to look at.
+      const name = path.split(/[\\/]/).pop() ?? path;
+      throw new Error(
+        `O arquivo ${name} do cofre está corrompido e não pôde ser lido. ` +
+          "Restaure-o de um backup ou corrija o JSON; nenhum arquivo foi alterado.",
+      );
+    }
   }
 
   async function writeJson(path: string, value: unknown): Promise<void> {
-    await writeTextFile(path, `${JSON.stringify(value, null, 2)}\n`);
+    const temp = `${path}.tmp`;
+    await writeTextFile(temp, `${JSON.stringify(value, null, 2)}\n`);
+    await rename(temp, path);
   }
 
   return {
@@ -92,37 +106,30 @@ export function createTauriRepository(
       const p = await filePaths();
       if (!(await exists(p.meta))) return null;
 
-      // Keep the version the files were written with so parseVault can migrate it.
+      // Keep the version the files were written with so parseVault can migrate
+      // it. A collection's missing file is an empty list — a file absent in an
+      // older schema (rules before v4, dismissals before v3) reads the same as
+      // one the user deleted.
       const meta = await readJson<{ schemaVersion: number }>(p.meta, {
         schemaVersion: VAULT_SCHEMA_VERSION,
       });
-      return parseVault({
-        schemaVersion: meta.schemaVersion,
-        accounts: await readJson<Account[]>(p.accounts, []),
-        groups: await readJson<Group[]>(p.groups, []),
-        categories: await readJson<Category[]>(p.categories, []),
-        transactions: await readJson<Transaction[]>(p.transactions, []),
-        budgets: await readJson<Budget[]>(p.budgets, []),
-        imports: await readJson<ImportRecord[]>(p.imports, []),
-        // Absent in a v2 vault, which simply had no dismissals to remember.
-        dismissedTransferPairs: await readJson<DismissedTransferPair[]>(
-          p.dismissedTransferPairs,
-          [],
-        ),
-      });
+      const collections: Partial<Record<VaultCollection, unknown>> = {};
+      for (const collection of VAULT_COLLECTIONS) {
+        collections[collection] = await readJson<unknown>(p[collection], []);
+      }
+      return parseVault({ schemaVersion: meta.schemaVersion, ...collections });
     },
 
     async save(vault: Vault) {
       const p = await filePaths();
       await mkdir(dir, { recursive: true });
+      for (const collection of VAULT_COLLECTIONS) {
+        await writeJson(p[collection], vault[collection]);
+      }
+      // The marker goes last. It is what makes a folder count as a vault, so a
+      // first save interrupted halfway leaves a folder that is not yet one,
+      // rather than a "vault" missing half its files.
       await writeJson(p.meta, { schemaVersion: vault.schemaVersion });
-      await writeJson(p.accounts, vault.accounts);
-      await writeJson(p.groups, vault.groups);
-      await writeJson(p.categories, vault.categories);
-      await writeJson(p.transactions, vault.transactions);
-      await writeJson(p.budgets, vault.budgets);
-      await writeJson(p.imports, vault.imports);
-      await writeJson(p.dismissedTransferPairs, vault.dismissedTransferPairs);
     },
   };
 }

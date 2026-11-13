@@ -1,41 +1,106 @@
 import { newId } from "./id";
-import type { Category, Group, Vault } from "./types";
+import type { CategoryKind, Vault } from "./types";
 import { emptyVault } from "./types";
 
 /**
- * A fresh vault with a small set of Brazilian income/expense Groups and
- * Categories, so a first-time user can record transactions straight away.
- * No accounts and no transactions — those are the user's to add.
+ * The Groups and Categories a brand-new Vault starts with.
+ *
+ * Data, not logic (issue #10): changing the starter set is editing this list.
+ * It is broad enough to classify a real Brazilian bank Statement without
+ * stopping to design a taxonomy first, and it is only a starting point — the
+ * Categories page lets the user rename, move, add and remove.
+ *
+ * Only a Vault created from nothing gets it. An existing Vault is never grown by
+ * an upgrade: the user's Category tree is theirs (ADR-0002).
  */
-export function seedVault(): Vault {
+export const SEED_TREE: readonly {
+  group: string;
+  kind: CategoryKind;
+  categories: readonly string[];
+}[] = [
+  {
+    group: "Renda",
+    kind: "income",
+    categories: ["Salário", "13º e férias", "Freelance e serviços", "Outras receitas"],
+  },
+  {
+    group: "Outras entradas",
+    kind: "income",
+    categories: ["Rendimentos", "Reembolsos", "Presentes recebidos"],
+  },
+  {
+    group: "Moradia",
+    kind: "expense",
+    categories: ["Aluguel", "Condomínio", "Contas de casa", "Internet e telefone", "Manutenção da casa"],
+  },
+  {
+    group: "Alimentação",
+    kind: "expense",
+    categories: ["Mercado", "Restaurante", "Delivery", "Padaria e lanches"],
+  },
+  {
+    group: "Transporte",
+    kind: "expense",
+    categories: [
+      "Combustível",
+      "Transporte público",
+      "Aplicativos de transporte",
+      "Estacionamento e pedágio",
+      "Manutenção do veículo",
+    ],
+  },
+  {
+    group: "Saúde",
+    kind: "expense",
+    categories: ["Plano de saúde", "Farmácia", "Consultas e exames"],
+  },
+  { group: "Educação", kind: "expense", categories: ["Cursos", "Livros e material"] },
+  {
+    group: "Lazer",
+    kind: "expense",
+    categories: ["Passeios e eventos", "Viagens", "Hobbies"],
+  },
+  {
+    group: "Assinaturas",
+    kind: "expense",
+    categories: ["Streaming", "Serviços digitais"],
+  },
+  {
+    group: "Compras",
+    kind: "expense",
+    categories: ["Roupas e calçados", "Eletrônicos", "Casa e decoração"],
+  },
+  {
+    group: "Cuidados pessoais",
+    kind: "expense",
+    categories: ["Beleza e higiene", "Academia e esportes"],
+  },
+  { group: "Pets", kind: "expense", categories: ["Pet"] },
+  {
+    group: "Finanças",
+    kind: "expense",
+    categories: ["Tarifas bancárias", "Juros e multas", "Impostos e taxas", "Seguros"],
+  },
+  {
+    group: "Outros",
+    kind: "expense",
+    categories: ["Presentes e doações", "Outras despesas"],
+  },
+];
+
+/**
+ * A fresh vault with the starter Groups and Categories, so a first-time user
+ * can record and classify transactions straight away. No accounts and no
+ * transactions — those are the user's to add.
+ */
+export function seedVault(makeId: () => string = newId): Vault {
   const vault = emptyVault();
-
-  const group = (name: string, kind: Group["kind"]): Group => {
-    const g: Group = { id: newId(), name, kind };
-    vault.groups.push(g);
-    return g;
-  };
-  const category = (name: string, g: Group): Category => {
-    const c: Category = { id: newId(), name, groupId: g.id };
-    vault.categories.push(c);
-    return c;
-  };
-
-  const renda = group("Renda", "income");
-  category("Salário", renda);
-  category("Outras receitas", renda);
-
-  const moradia = group("Moradia", "expense");
-  category("Aluguel", moradia);
-  category("Contas de casa", moradia);
-
-  const alimentacao = group("Alimentação", "expense");
-  category("Mercado", alimentacao);
-  category("Restaurante", alimentacao);
-
-  const transporte = group("Transporte", "expense");
-  category("Combustível", transporte);
-  category("Transporte público", transporte);
-
+  for (const { group, kind, categories } of SEED_TREE) {
+    const groupId = makeId();
+    vault.groups.push({ id: groupId, name: group, kind });
+    for (const name of categories) {
+      vault.categories.push({ id: makeId(), name, groupId });
+    }
+  }
   return vault;
 }

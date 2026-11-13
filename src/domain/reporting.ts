@@ -1,6 +1,7 @@
 import { monthKey, spentInCategoryForMonth } from "./balances";
 import { type Centavos, centavos } from "./money";
 import type { Id, ISODate, Vault } from "./types";
+import { isBudgeted } from "./types";
 
 /** "YYYY-MM" for a month, e.g. the month an ISO date falls in. */
 export type MonthKey = string;
@@ -20,6 +21,21 @@ export function recentMonths(upTo: MonthKey, count: number): MonthKey[] {
     months.push(`${d.getUTCFullYear()}-${m}`);
   }
   return months;
+}
+
+/**
+ * The months a month picker should offer, newest first: the last twelve up to
+ * `current`, plus every month the Vault actually has Transactions in.
+ *
+ * The twelve alone made older history unreachable on the dashboard — a Vault
+ * holding two years of imported Statements could only show its last year,
+ * which is the same bug the Transactions page had before it listed every
+ * month (#11). Months with data in the future (a post-dated entry) are kept too.
+ */
+export function monthChoices(vault: Vault, current: MonthKey): MonthKey[] {
+  const months = new Set(recentMonths(current, 12));
+  for (const tx of vault.transactions) months.add(monthKey(tx.date));
+  return [...months].sort().reverse();
 }
 
 export interface CategorySpend {
@@ -88,6 +104,7 @@ export function budgetStatusForMonth(vault: Vault, month: MonthKey): BudgetStatu
 
   const rows: BudgetStatus[] = [];
   for (const budget of vault.budgets) {
+    if (!isBudgeted(budget)) continue; // a zero limit is "not budgeted", not a meter at 0
     const cat = category.get(budget.categoryId);
     if (!cat) continue; // budget for a category that no longer exists
     const spent = spentInCategoryForMonth(vault.transactions, budget.categoryId, month);

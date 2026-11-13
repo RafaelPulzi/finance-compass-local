@@ -1,20 +1,41 @@
 import { type ChangeEvent, useMemo, useState } from "react";
+import { formatDateBR } from "../domain/dates";
 import { formatBRL } from "../domain/money";
 import { centavos } from "../domain/money";
 import { type ParsedStatement, decodeOfxBytes, parseOfx } from "../domain/ofx";
 import { planImport } from "../domain/statementImport";
 import { useVault } from "../store/useVault";
 
+/** How many past Imports the history shows; the full record stays in imports.json. */
+const HISTORY_SIZE = 5;
+
+const importedAtFormat = new Intl.DateTimeFormat("pt-BR", {
+  dateStyle: "short",
+  timeStyle: "short",
+});
+
 export function ImportPanel() {
   const accounts = useVault((s) => s.vault.accounts);
   const transactions = useVault((s) => s.vault.transactions);
+  const imports = useVault((s) => s.vault.imports);
   const commitImport = useVault((s) => s.commitImport);
 
-  const [accountId, setAccountId] = useState("");
+  const [chosenAccountId, setAccountId] = useState("");
+  // With a single Account there is only one possible answer, so it is not asked.
+  const accountId =
+    chosenAccountId !== "" ? chosenAccountId : accounts.length === 1 ? accounts[0].id : "";
+  const accountName = new Map(accounts.map((a) => [a.id, a.name]));
+  const history = [...imports]
+    .sort((a, b) => (a.importedAt < b.importedAt ? 1 : -1))
+    .slice(0, HISTORY_SIZE);
   const [statement, setStatement] = useState<ParsedStatement | null>(null);
   const [fileName, setFileName] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [result, setResult] = useState<{ added: number; skipped: number } | null>(null);
+  const [result, setResult] = useState<{
+    added: number;
+    skipped: number;
+    classified: number;
+  } | null>(null);
 
   const plan = useMemo(() => {
     if (statement === null || accountId === "") return null;
@@ -40,8 +61,12 @@ export function ImportPanel() {
 
   function confirm() {
     if (plan === null) return;
-    commitImport({ plan, fileName });
-    setResult({ added: plan.additions.length, skipped: plan.duplicates.length });
+    const report = commitImport({ plan, fileName });
+    setResult({
+      added: report.added,
+      skipped: plan.duplicates.length,
+      classified: report.classified,
+    });
     setStatement(null);
     setFileName("");
   }
@@ -107,8 +132,21 @@ export function ImportPanel() {
       {result && (
         <p className="mt-3 rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">
           Importado: {result.added} {result.added === 1 ? "lançamento" : "lançamentos"}
-          {result.skipped > 0 && `, ${result.skipped} já existia(m)`}. As transações
-          importadas ficam <strong>sem categoria</strong> até você classificá-las.
+          {result.skipped > 0 && `, ${result.skipped} já existia(m)`}.{" "}
+          {/* What is left to do is the useful half of this message: a month whose
+              merchants are all known needs no classification at all. */}
+          {result.classified > 0 ? (
+            <>
+              Suas regras classificaram <strong>{result.classified}</strong>; os
+              outros {result.added - result.classified} ficam{" "}
+              <strong>sem categoria</strong> até você classificá-los.
+            </>
+          ) : (
+            <>
+              As transações importadas ficam <strong>sem categoria</strong> até você
+              classificá-las.
+            </>
+          )}
         </p>
       )}
 
@@ -125,7 +163,8 @@ export function ImportPanel() {
             )}
             {statement.periodStart && statement.periodEnd && (
               <div>
-                Período: {statement.periodStart} a {statement.periodEnd}
+                Período: {formatDateBR(statement.periodStart)} a{" "}
+                {formatDateBR(statement.periodEnd)}
               </div>
             )}
             <div>Lançamentos no arquivo: {statement.entries.length}</div>
@@ -160,7 +199,7 @@ export function ImportPanel() {
                     {plan.additions.slice(0, 20).map((entry) => (
                       <li key={entry.fitid} className="flex justify-between gap-2 py-1">
                         <span className="truncate text-slate-600 dark:text-slate-300">
-                          {entry.date} · {entry.description || "(sem descrição)"}
+                          {formatDateBR(entry.date)} · {entry.description || "(sem descrição)"}
                         </span>
                         <span
                           className={
@@ -201,6 +240,28 @@ export function ImportPanel() {
               </>
             )
           )}
+        </div>
+      )}
+
+      {history.length > 0 && (
+        <div className="mt-4 border-t border-slate-100 pt-3 dark:border-slate-700">
+          <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">
+            Importações recentes
+          </h3>
+          <ul aria-label="Importações recentes" className="space-y-1 text-xs">
+            {history.map((record) => (
+              <li key={record.id} className="flex flex-wrap justify-between gap-x-2 text-slate-600 dark:text-slate-300">
+                <span className="min-w-0 truncate">
+                  {importedAtFormat.format(new Date(record.importedAt))} · {record.fileName} →{" "}
+                  {accountName.get(record.accountId) ?? "conta removida"}
+                </span>
+                <span className="shrink-0 tabular-nums text-slate-500">
+                  +{record.added}
+                  {record.skipped > 0 && ` · ${record.skipped} já existiam`}
+                </span>
+              </li>
+            ))}
+          </ul>
         </div>
       )}
     </section>

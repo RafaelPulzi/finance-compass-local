@@ -538,7 +538,8 @@ describe("TransactionsPanel editing and deleting", () => {
       show(vault);
       await userEvent.click(screen.getByLabelText("Excluir MERCADO"));
 
-      const prompt = screen.getByText(/Excluir .MERCADO. de 2026-10-02/);
+      // Dates read the Brazilian way on screen: day, month, year.
+      const prompt = screen.getByText(/Excluir .MERCADO. de 02\/10\/2026/);
       expect(prompt).toBeInTheDocument();
       expect(prompt).toHaveTextContent("300,00");
       // Nothing is gone yet.
@@ -831,5 +832,346 @@ describe("marking an entry as a Transfer", () => {
     expect(
       screen.queryByRole("checkbox", { name: "Selecionar APLICACAO CDB" }),
     ).not.toBeInTheDocument();
+  });
+});
+
+describe("TransactionsPanel add form", () => {
+  it("clears a Category of the other kind when the kind changes, so it can't be saved under the wrong one", async () => {
+    const user = userEvent.setup();
+    show(base);
+    await user.selectOptions(screen.getByLabelText("Nova transação: categoria"), "cat-market");
+    await user.selectOptions(screen.getByLabelText("Nova transação: tipo"), "income");
+
+    expect(screen.getByLabelText("Nova transação: categoria")).toHaveValue("");
+
+    await user.type(screen.getByLabelText("Nova transação: valor"), "10,00");
+    await user.selectOptions(screen.getByLabelText("Nova transação: conta"), INTER);
+    await user.click(screen.getByRole("button", { name: "Adicionar transação" }));
+
+    expect(screen.getByText("Escolha uma categoria.")).toBeInTheDocument();
+    expect(useVault.getState().vault.transactions).toEqual([]);
+  });
+
+  it("records an Expense, reading a dot-decimal amount as reais and centavos", async () => {
+    const user = userEvent.setup();
+    show(base);
+    await user.type(screen.getByLabelText("Nova transação: valor"), "49.90");
+    await user.type(screen.getByLabelText("Nova transação: descrição"), "Feira");
+    await user.selectOptions(screen.getByLabelText("Nova transação: conta"), INTER);
+    await user.selectOptions(screen.getByLabelText("Nova transação: categoria"), "cat-market");
+    await user.click(screen.getByRole("button", { name: "Adicionar transação" }));
+
+    expect(useVault.getState().vault.transactions).toMatchObject([
+      { kind: "expense", amount: 4990, description: "Feira", categoryId: "cat-market" },
+    ]);
+    expect(screen.getByLabelText("Nova transação: valor")).toHaveValue("");
+  });
+
+  it("shows the domain's refusal and keeps what was typed", async () => {
+    const user = userEvent.setup();
+    show(base);
+    await user.selectOptions(screen.getByLabelText("Nova transação: tipo"), "transfer");
+    await user.type(screen.getByLabelText("Nova transação: valor"), "100");
+    await user.selectOptions(screen.getByLabelText("Nova transação: conta de origem"), INTER);
+    await user.selectOptions(screen.getByLabelText("Nova transação: conta de destino"), INTER);
+    await user.click(screen.getByRole("button", { name: "Adicionar transação" }));
+
+    expect(screen.getByText("Origem e destino devem ser diferentes.")).toBeInTheDocument();
+    expect(screen.getByLabelText("Nova transação: valor")).toHaveValue("100");
+    expect(useVault.getState().vault.transactions).toEqual([]);
+  });
+
+  it("lists Categories under their Group", () => {
+    show(base);
+    const select = screen.getByLabelText("Nova transação: categoria");
+    const group = select.querySelector('optgroup[label="Alimentação"]');
+    expect(group).not.toBeNull();
+    expect(within(group as HTMLElement).getByRole("option", { name: "Mercado" })).toBeInTheDocument();
+  });
+
+  it("shows each row's date the Brazilian way", () => {
+    show({
+      ...base,
+      transactions: [expense("e1", "2026-10-02", 1000, "MERCADO", "cat-market")],
+    });
+    expect(listText()).toContain("02/10/2026");
+  });
+});
+
+describe("marking a whole selection as Transfers", () => {
+  const vault: Vault = {
+    ...base,
+    transactions: [
+      expense("e1", "2026-10-02", 25001, "APLICACAO CDB 1", null),
+      expense("e2", "2026-10-03", 25001, "APLICACAO CDB 2", null),
+      {
+        id: "i1",
+        kind: "income",
+        date: "2026-10-04",
+        amount: centavos(10000),
+        description: "RESGATE CDB",
+        accountId: INTER,
+        categoryId: null,
+      },
+    ],
+  };
+
+  const kindOf = (id: string) =>
+    useVault.getState().vault.transactions.find((t) => t.id === id)?.kind;
+
+  /** Ordinary spaces, since formatBRL puts a non-breaking one after "R$". */
+  const plain = (text: string) => text.replace(/ /g, " ");
+
+  async function selectBoth() {
+    const user = userEvent.setup();
+    await user.click(screen.getByLabelText("Selecionar APLICACAO CDB 1"));
+    await user.click(screen.getByLabelText("Selecionar RESGATE CDB"));
+    return user;
+  }
+
+  it("offers the action even when the selection mixes Incomes and Expenses", async () => {
+    show(vault);
+    await selectBoth();
+
+    // No Category can apply to both kinds, but each entry's own kind gives its
+    // Transfer a direction, so marking is still available.
+    expect(screen.queryByLabelText("Categoria para as selecionadas")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Outra conta das transferências")).toBeInTheDocument();
+  });
+
+  it("says which balance moves, and by how much, before anything is converted", async () => {
+    show(vault);
+    const user = await selectBoth();
+
+    await user.selectOptions(
+      screen.getByLabelText("Outra conta das transferências"),
+      "acc-savings",
+    );
+
+    const warning = screen.getByText(/Esses valores deixam de contar/);
+    expect(plain(warning.textContent ?? "")).toContain("Poupança");
+    expect(plain(warning.textContent ?? "")).toContain("aumenta R$ 250,01");
+    expect(plain(warning.textContent ?? "")).toContain("diminui R$ 100,00");
+    // Still nothing converted: the warning is read before the click, not after.
+    expect(kindOf("e1")).toBe("expense");
+    expect(kindOf("i1")).toBe("income");
+  });
+
+  it("converts the whole selection on one confirmation and says how many", async () => {
+    show(vault);
+    const user = await selectBoth();
+    await user.selectOptions(
+      screen.getByLabelText("Outra conta das transferências"),
+      "acc-savings",
+    );
+
+    await user.click(screen.getByRole("button", { name: /Confirmar 2 transferências/ }));
+
+    expect(kindOf("e1")).toBe("transfer");
+    expect(kindOf("i1")).toBe("transfer");
+    // The untouched row is still what it was.
+    expect(kindOf("e2")).toBe("expense");
+    expect(screen.getByRole("status").textContent).toContain(
+      "2 lançamentos viraram transferências.",
+    );
+  });
+
+  it("clears the selection once the batch has run", async () => {
+    show(vault);
+    const user = await selectBoth();
+    await user.selectOptions(
+      screen.getByLabelText("Outra conta das transferências"),
+      "acc-savings",
+    );
+
+    await user.click(screen.getByRole("button", { name: /Confirmar/ }));
+
+    expect(screen.queryByLabelText("Outra conta das transferências")).not.toBeInTheDocument();
+  });
+
+  it("previews only what will convert, leaving out entries already on the Account", async () => {
+    show({
+      ...vault,
+      transactions: [
+        ...vault.transactions,
+        // Already on the chosen Account: the conversion will skip it, so the
+        // promised balance change must not include its R$ 250,01.
+        expense("e3", "2026-10-05", 25001, "JA NA POUPANCA", null, SAVINGS),
+      ],
+    });
+    const user = userEvent.setup();
+    await user.click(screen.getByLabelText("Selecionar APLICACAO CDB 1"));
+    await user.click(screen.getByLabelText("Selecionar JA NA POUPANCA"));
+
+    await user.selectOptions(
+      screen.getByLabelText("Outra conta das transferências"),
+      "acc-savings",
+    );
+
+    const warning = plain(screen.getByText(/Esses valores deixam de contar/).textContent ?? "");
+    expect(warning).toContain("aumenta R$ 250,01");
+    expect(warning).not.toContain("R$ 500,02");
+    expect(warning).toContain("1 lançamento da seleção será ignorado");
+    expect(
+      screen.getByRole("button", { name: /Confirmar 1 transferência/ }),
+    ).toBeInTheDocument();
+  });
+
+  it("names what it skipped instead of counting it as converted", async () => {
+    show({
+      ...vault,
+      // This one is already on the Account the batch points at.
+      transactions: [
+        ...vault.transactions,
+        expense("e3", "2026-10-05", 25001, "JA NA POUPANCA", null, SAVINGS),
+      ],
+    });
+    const user = userEvent.setup();
+    await user.click(screen.getByLabelText("Selecionar APLICACAO CDB 1"));
+    await user.click(screen.getByLabelText("Selecionar JA NA POUPANCA"));
+
+    await user.selectOptions(
+      screen.getByLabelText("Outra conta das transferências"),
+      "acc-savings",
+    );
+    await user.click(screen.getByRole("button", { name: /Confirmar/ }));
+
+    const notice = screen.getByRole("status").textContent ?? "";
+    expect(notice).toContain("1 lançamento virou transferência.");
+    expect(notice).toContain("1 ignorado");
+    expect(notice).toContain("Escolha uma conta diferente da do lançamento.");
+    expect(kindOf("e3")).toBe("expense");
+  });
+
+  it("says a second Account is needed when the Vault has only one", async () => {
+    show({
+      ...vault,
+      accounts: [base.accounts[0]],
+      transactions: [vault.transactions[0]],
+    });
+    const user = userEvent.setup();
+    await user.click(screen.getByLabelText("Selecionar APLICACAO CDB 1"));
+
+    expect(screen.getByText(/Só existe uma conta no cofre/)).toBeInTheDocument();
+  });
+});
+
+describe("being offered a Rule after classifying by hand", () => {
+  const vault: Vault = {
+    ...base,
+    transactions: [
+      expense("e1", "2026-10-02", 3000, "UBER TRIP 8213", null),
+      expense("e2", "2026-10-03", 4000, "UBER TRIP 9120", null),
+      expense("e3", "2026-10-04", 1000, "PADARIA DO ZE", null),
+    ],
+  };
+
+  const rulesOf = () => useVault.getState().vault.rules;
+
+  /** Select two rows and classify them, which is what prompts the offer. */
+  async function classifyBothUbers(from: Vault = vault) {
+    show(from);
+    const user = userEvent.setup();
+    await user.click(screen.getByLabelText("Selecionar UBER TRIP 8213"));
+    await user.click(screen.getByLabelText("Selecionar UBER TRIP 9120"));
+    await user.selectOptions(
+      screen.getByLabelText("Categoria para as selecionadas"),
+      "cat-market",
+    );
+    return user;
+  }
+
+  it("prefills the words the classified descriptions share", async () => {
+    await classifyBothUbers();
+
+    expect(screen.getByLabelText("Padrão da regra sugerida")).toHaveValue("uber trip");
+  });
+
+  it("creates the Rule, with whatever the user edited the pattern down to", async () => {
+    const user = await classifyBothUbers();
+
+    const input = screen.getByLabelText("Padrão da regra sugerida");
+    await user.clear(input);
+    await user.type(input, "uber");
+    await user.click(screen.getByRole("button", { name: "Criar regra" }));
+
+    expect(rulesOf()).toMatchObject([
+      { pattern: "uber", categoryId: "cat-market", kind: "expense" },
+    ]);
+    expect(screen.getByRole("status").textContent).toContain("Regra criada");
+  });
+
+  it("creates nothing when the offer is declined", async () => {
+    const user = await classifyBothUbers();
+
+    await user.click(screen.getByRole("button", { name: "não, obrigado" }));
+
+    expect(rulesOf()).toEqual([]);
+    expect(screen.queryByLabelText("Padrão da regra sugerida")).not.toBeInTheDocument();
+  });
+
+  it("offers nothing when the descriptions have no words in common", async () => {
+    show(vault);
+    const user = userEvent.setup();
+    await user.click(screen.getByLabelText("Selecionar UBER TRIP 8213"));
+    await user.click(screen.getByLabelText("Selecionar PADARIA DO ZE"));
+
+    await user.selectOptions(
+      screen.getByLabelText("Categoria para as selecionadas"),
+      "cat-market",
+    );
+
+    expect(screen.queryByLabelText("Padrão da regra sugerida")).not.toBeInTheDocument();
+  });
+
+  it("offers nothing when a Rule already says this", async () => {
+    await classifyBothUbers({
+      ...vault,
+      rules: [
+        { id: "r-1", pattern: "UBER TRIP", categoryId: "cat-market", kind: "expense" },
+      ],
+    });
+
+    expect(screen.queryByLabelText("Padrão da regra sugerida")).not.toBeInTheDocument();
+  });
+});
+
+describe("seeing which Rule classified a Transaction", () => {
+  it("names the Rule on the row", () => {
+    show({
+      ...base,
+      rules: [{ id: "r-1", pattern: "ifood", categoryId: "cat-market", kind: "expense" }],
+      transactions: [
+        {
+          ...expense("e1", "2026-10-02", 5000, "IFOOD PEDIDO", "cat-market"),
+          ruleId: "r-1",
+        } as Transaction,
+      ],
+    });
+
+    expect(listText()).toContain("regra “ifood”");
+  });
+
+  it("says so plainly when the Rule has since been deleted", () => {
+    show({
+      ...base,
+      transactions: [
+        {
+          ...expense("e1", "2026-10-02", 5000, "IFOOD PEDIDO", "cat-market"),
+          ruleId: "r-gone",
+        } as Transaction,
+      ],
+    });
+
+    expect(listText()).toContain("por uma regra já excluída");
+  });
+
+  it("says nothing about Rules for a Category the user chose", () => {
+    show({
+      ...base,
+      transactions: [expense("e1", "2026-10-02", 5000, "IFOOD PEDIDO", "cat-market")],
+    });
+
+    expect(listText()).not.toContain("regra");
   });
 });

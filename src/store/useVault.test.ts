@@ -4,6 +4,7 @@ import { centavos } from "../domain/money";
 import { pendingRuleCount } from "../domain/classificationRules";
 import { planImport } from "../domain/statementImport";
 import type { Transaction, Vault } from "../domain/types";
+import { VAULT_COLLECTIONS } from "../domain/types";
 
 /**
  * Repositories that model the real Tauri vault: a folder per vault, each entity
@@ -54,16 +55,9 @@ function folder(dir: string): FakeFolder {
   return found;
 }
 
-const ENTITIES = [
-  "accounts",
-  "groups",
-  "categories",
-  "rules",
-  "transactions",
-  "budgets",
-  "imports",
-  "dismissedTransferPairs",
-] as const;
+// The same table the real load/save iterate, so this fake can never fall a
+// collection behind the schema.
+const ENTITIES = VAULT_COLLECTIONS;
 
 const yieldToOtherTasks = () => new Promise((r) => setTimeout(r, state.saveDelayMs));
 

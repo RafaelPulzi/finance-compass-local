@@ -1,5 +1,5 @@
-import type { Vault } from "../domain/types";
-import { VAULT_SCHEMA_VERSION, isBudgeted } from "../domain/types";
+import type { Vault, VaultCollection } from "../domain/types";
+import { VAULT_COLLECTIONS, VAULT_SCHEMA_VERSION, isBudgeted } from "../domain/types";
 
 /**
  * A place a Vault can be loaded from and saved to. The domain and UI never know
@@ -53,20 +53,21 @@ export function parseVault(raw: unknown): Vault {
       `Este cofre foi criado por uma versão mais nova do Finance Compass (schema ${version}).`,
     );
   }
+  // A collection absent in an older schema is simply empty (v3 had no Rules,
+  // v2 no dismissals); one that is present must be a list.
+  const collections = Object.fromEntries(
+    VAULT_COLLECTIONS.map((collection) => [
+      collection,
+      listOf<unknown>(stored[collection], collection),
+    ]),
+  ) as unknown as Pick<Vault, VaultCollection>;
   return {
     schemaVersion: VAULT_SCHEMA_VERSION,
-    accounts: listOf(stored.accounts, "accounts"),
-    groups: listOf(stored.groups, "groups"),
-    categories: listOf(stored.categories, "categories"),
-    // Absent in a v3 vault, which had no Rules at all.
-    rules: listOf(stored.rules, "rules"),
-    transactions: listOf(stored.transactions, "transactions"),
+    ...collections,
     // Older versions kept a `monthlyLimit: 0` row for "not budgeted"; now the
     // row's absence says that, so legacy zero rows are scrubbed on the way in
     // (they metered nothing, and they used to block deleting their Category).
-    budgets: listOf(stored.budgets, "budgets").filter(isBudgeted),
-    imports: listOf(stored.imports, "imports"),
-    dismissedTransferPairs: listOf(stored.dismissedTransferPairs, "dismissedTransferPairs"),
+    budgets: collections.budgets.filter(isBudgeted),
   };
 }
 

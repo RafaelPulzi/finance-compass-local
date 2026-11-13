@@ -224,16 +224,29 @@ export interface Vault {
   dismissedTransferPairs: DismissedTransferPair[];
 }
 
+/**
+ * The collections a Vault is made of, each mirrored to its own JSON file
+ * (ADR-0002). This is the one list: loading, saving, parsing and the test
+ * fakes all iterate it, so adding a collection in v5 means adding it to the
+ * Vault interface and here — `emptyVault`'s return type refuses to compile
+ * until both agree — instead of hunting down six hand-written copies.
+ */
+export const VAULT_COLLECTIONS = [
+  "accounts",
+  "groups",
+  "categories",
+  "rules",
+  "transactions",
+  "budgets",
+  "imports",
+  "dismissedTransferPairs",
+] as const satisfies readonly (keyof Vault)[];
+
+export type VaultCollection = (typeof VAULT_COLLECTIONS)[number];
+
 export function emptyVault(): Vault {
-  return {
-    schemaVersion: VAULT_SCHEMA_VERSION,
-    accounts: [],
-    groups: [],
-    categories: [],
-    rules: [],
-    transactions: [],
-    budgets: [],
-    imports: [],
-    dismissedTransferPairs: [],
-  };
+  const collections = Object.fromEntries(
+    VAULT_COLLECTIONS.map((collection) => [collection, []]),
+  ) as unknown as Pick<Vault, VaultCollection>;
+  return { schemaVersion: VAULT_SCHEMA_VERSION, ...collections };
 }

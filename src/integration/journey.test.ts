@@ -6,6 +6,7 @@ import { budgetStatusForMonth, monthlyTotals, spendingByCategoryForMonth } from 
 import { planImport } from "../domain/statementImport";
 import { selectTransactions, NO_FILTER } from "../domain/transactionQuery";
 import type { Vault } from "../domain/types";
+import { VAULT_COLLECTIONS } from "../domain/types";
 
 /**
  * One user's whole first month, end to end, through the real store and the
@@ -15,16 +16,9 @@ import type { Vault } from "../domain/types";
  */
 
 const disk = new Map<string, string>();
-const ENTITIES = [
-  "accounts",
-  "groups",
-  "categories",
-  "rules",
-  "transactions",
-  "budgets",
-  "imports",
-  "dismissedTransferPairs",
-] as const;
+// The same table the real load/save iterate, so this fake disk can never fall
+// a collection behind the schema.
+const ENTITIES = VAULT_COLLECTIONS;
 
 function repo() {
   return {

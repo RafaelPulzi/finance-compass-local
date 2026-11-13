@@ -30,11 +30,10 @@ import { emptyVault } from "../domain/types";
 import {
   type VaultFolderPick,
   type VaultRepository,
-  createVaultRepositoryAt,
-  inspectVaultFolder,
   isTauri,
   pickRepository,
 } from "../persistence/repository";
+import * as session from "../persistence/session";
 
 type Status = "loading" | "ready" | "error";
 
@@ -219,54 +218,22 @@ interface VaultState {
   revertTransferToEntry: (transferId: Id) => TransactionEditResult;
 }
 
-let repository: VaultRepository | null = null;
-
 /**
  * Guards `init` so concurrent or repeated calls share a single run. Without it,
  * two inits on an empty vault each generate their own seed (fresh ids) and save
  * both, leaving groups and categories describing different vaults. React's
  * StrictMode invokes effects twice in development, so this is the normal case.
+ *
+ * Which repository saves go to, and the chain that keeps them from
+ * overlapping, live in the persistence session — that is the adapter's own
+ * invariant, not the store's.
  */
 let initPromise: Promise<void> | null = null;
 
-/**
- * Serializes persistence. A Tauri vault is several JSON files written one after
- * another, so two overlapping saves interleave their writes and tear the vault
- * (groups.json from one state, categories.json from another). Chaining makes
- * each save finish before the next starts; every save writes the whole state,
- * so the last one to run leaves the vault correct.
- */
-let saveChain: Promise<unknown> = Promise.resolve();
-
-/**
- * Queue a save of `vault`. `report` hears how it went — null on success, the
- * error otherwise — which is how a failure reaches the screen instead of
- * vanishing into the chain.
- */
-function persist(vault: Vault, report?: (error: unknown) => void): Promise<void> {
-  // Bind the save to the repository that was current when the change was made.
-  // Reading `repository` when the chain later runs would send a change meant for
-  // the old folder to a vault the user has since opened somewhere else.
-  const target = repository;
-  const run = saveChain
-    // A failed save must not break the chain for every save after it.
-    .catch(() => undefined)
-    .then(() => target?.save(vault));
-  saveChain = run;
-  // Attaching the handlers here also keeps a failure from surfacing as an
-  // unhandled rejection: it has been dealt with by reporting it.
-  run.then(
-    () => report?.(null),
-    (error: unknown) => report?.(error),
-  );
-  return run as Promise<void>;
-}
-
 /** Test seam: drop module state so a fresh store starts from nothing. */
 export function resetVaultPersistence(): void {
-  repository = null;
   initPromise = null;
-  saveChain = Promise.resolve();
+  session.resetSession();
 }
 
 function messageOf(e: unknown): string {
@@ -281,7 +248,7 @@ export const useVault = create<VaultState>((set, get) => {
   /** Apply a change to the vault, then persist it. */
   const mutate = (next: Vault) => {
     set({ vault: next });
-    void persist(next, reportSave);
+    void session.queueSave(next, reportSave);
   };
 
   /**
@@ -318,16 +285,10 @@ export const useVault = create<VaultState>((set, get) => {
     take: (repo: VaultRepository) => Promise<Vault>,
   ): Promise<VaultSwitchResult> => {
     try {
-      // Let saves already queued finish against the old folder first.
-      await saveChain.catch(() => undefined);
+      // The session drains queued saves against the old folder, fails before
+      // swapping anything, and remembers the path before the swap.
+      const { repo, vault } = await session.attachTo(dir, take);
 
-      const repo = await createVaultRepositoryAt(dir, { mustExist: true });
-      const vault = await take(repo);
-
-      const { rememberVaultDir } = await import("../persistence/vaultLocation");
-      await rememberVaultDir(dir);
-
-      repository = repo;
       // The app is attached to a vault now, so a remount must not re-run init
       // and overwrite it with whatever the old location held.
       initPromise = Promise.resolve();
@@ -359,10 +320,10 @@ export const useVault = create<VaultState>((set, get) => {
       initPromise ??= (async () => {
         try {
           const repo = await pickRepository();
-          repository = repo;
+          session.bindRepository(repo);
           const loaded = await repo.load();
           const vault = loaded ?? seedVault();
-          if (loaded === null) await persist(vault);
+          if (loaded === null) await session.queueSave(vault);
           set({
             vault,
             status: "ready",
@@ -379,14 +340,11 @@ export const useVault = create<VaultState>((set, get) => {
     },
 
     async retrySave() {
-      await persist(get().vault, reportSave).catch(() => undefined);
+      await session.queueSave(get().vault, reportSave).catch(() => undefined);
     },
 
-    async chooseVaultFolder() {
-      const { promptForVaultFolder } = await import("../persistence/vaultLocation");
-      const dir = await promptForVaultFolder();
-      if (dir === null) return null;
-      return inspectVaultFolder(dir);
+    chooseVaultFolder() {
+      return session.promptForFolder();
     },
 
     openVaultAt(dir) {

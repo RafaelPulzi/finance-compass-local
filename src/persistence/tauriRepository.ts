@@ -1,17 +1,7 @@
 import { join } from "@tauri-apps/api/path";
 import { exists, mkdir, readTextFile, rename, writeTextFile } from "@tauri-apps/plugin-fs";
-import type {
-  Account,
-  Budget,
-  Category,
-  DismissedTransferPair,
-  Group,
-  ImportRecord,
-  Rule,
-  Transaction,
-  Vault,
-} from "../domain/types";
-import { VAULT_SCHEMA_VERSION } from "../domain/types";
+import type { Vault, VaultCollection } from "../domain/types";
+import { VAULT_COLLECTIONS, VAULT_SCHEMA_VERSION } from "../domain/types";
 import { type VaultRepository, parseVault } from "./repository";
 import { VAULT_MARKER } from "./vaultLocation";
 
@@ -31,8 +21,9 @@ import { VAULT_MARKER } from "./vaultLocation";
  * always either its old version or its new one.
  */
 
-const NAMES = {
-  meta: VAULT_MARKER,
+/** Each collection's file in the vault folder. `Record` keeps it total: a new
+ * collection in `VAULT_COLLECTIONS` refuses to compile until it has a file. */
+const COLLECTION_FILES: Record<VaultCollection, string> = {
   accounts: "accounts.json",
   groups: "groups.json",
   categories: "categories.json",
@@ -41,7 +32,9 @@ const NAMES = {
   budgets: "budgets.json",
   imports: "imports.json",
   dismissedTransferPairs: "dismissed-transfers.json",
-} as const;
+};
+
+const NAMES = { meta: VAULT_MARKER, ...COLLECTION_FILES } as const;
 
 type FilePaths = Record<keyof typeof NAMES, string>;
 
@@ -113,39 +106,26 @@ export function createTauriRepository(
       const p = await filePaths();
       if (!(await exists(p.meta))) return null;
 
-      // Keep the version the files were written with so parseVault can migrate it.
+      // Keep the version the files were written with so parseVault can migrate
+      // it. A collection's missing file is an empty list — a file absent in an
+      // older schema (rules before v4, dismissals before v3) reads the same as
+      // one the user deleted.
       const meta = await readJson<{ schemaVersion: number }>(p.meta, {
         schemaVersion: VAULT_SCHEMA_VERSION,
       });
-      return parseVault({
-        schemaVersion: meta.schemaVersion,
-        accounts: await readJson<Account[]>(p.accounts, []),
-        groups: await readJson<Group[]>(p.groups, []),
-        categories: await readJson<Category[]>(p.categories, []),
-        // Absent in a v3 vault, which had no Rules at all.
-        rules: await readJson<Rule[]>(p.rules, []),
-        transactions: await readJson<Transaction[]>(p.transactions, []),
-        budgets: await readJson<Budget[]>(p.budgets, []),
-        imports: await readJson<ImportRecord[]>(p.imports, []),
-        // Absent in a v2 vault, which simply had no dismissals to remember.
-        dismissedTransferPairs: await readJson<DismissedTransferPair[]>(
-          p.dismissedTransferPairs,
-          [],
-        ),
-      });
+      const collections: Partial<Record<VaultCollection, unknown>> = {};
+      for (const collection of VAULT_COLLECTIONS) {
+        collections[collection] = await readJson<unknown>(p[collection], []);
+      }
+      return parseVault({ schemaVersion: meta.schemaVersion, ...collections });
     },
 
     async save(vault: Vault) {
       const p = await filePaths();
       await mkdir(dir, { recursive: true });
-      await writeJson(p.accounts, vault.accounts);
-      await writeJson(p.groups, vault.groups);
-      await writeJson(p.categories, vault.categories);
-      await writeJson(p.rules, vault.rules);
-      await writeJson(p.transactions, vault.transactions);
-      await writeJson(p.budgets, vault.budgets);
-      await writeJson(p.imports, vault.imports);
-      await writeJson(p.dismissedTransferPairs, vault.dismissedTransferPairs);
+      for (const collection of VAULT_COLLECTIONS) {
+        await writeJson(p[collection], vault[collection]);
+      }
       // The marker goes last. It is what makes a folder count as a vault, so a
       // first save interrupted halfway leaves a folder that is not yet one,
       // rather than a "vault" missing half its files.

@@ -26,7 +26,13 @@ Organizador de finanças pessoais **local-first** para desktop. Você importa os
 
 ### 1. Instalar
 
-Ainda não há um instalador publicado para download. Para gerar o seu, siga [Rodando do zero](#rodando-do-zero) até o passo de **instalador**; o `Finance Compass_0.1.0_x64-setup.exe` sai em `src-tauri/target/release/bundle/nsis/`. Dê dois cliques nele e o Finance Compass aparece no menu Iniciar. Instalar uma versão nova por cima mantém os seus dados — eles ficam no cofre, não na pasta do programa.
+Baixe o instalador na página pública de downloads:
+
+➡️ **<https://github.com/RafaelPulzi/finance-compass-releases/releases/latest>** — pegue o `Finance Compass_x.y.z_x64-setup.exe`.
+
+Como o instalador ainda não é assinado digitalmente, o Windows pode mostrar "O Windows protegeu o computador" — clique em "Mais informações → Executar assim mesmo". Depois de instalado, o Finance Compass aparece no menu Iniciar. Instalar uma versão nova por cima mantém os seus dados — eles ficam no cofre, não na pasta do programa.
+
+Prefere compilar o seu próprio? Siga [Rodando do zero](#rodando-do-zero); o mesmo `...setup.exe` sai em `src-tauri/target/release/bundle/nsis/`.
 
 ### 2. Primeiros passos
 
@@ -123,6 +129,7 @@ Só quer mexer na interface? `npm run dev` abre em <http://localhost:1420> no na
 | `npm run lint` | oxlint. |
 | `npm run build` | Build de produção da interface em `dist/`. |
 | `npm run tauri build` | Instalador desktop em `src-tauri/target/release/bundle/`. |
+| `.\scripts\release.ps1 -NotesFile notas.md` | Publica uma versão: build dos instaladores + tag `vX.Y.Z` aqui + release público em [finance-compass-releases](https://github.com/RafaelPulzi/finance-compass-releases). Antes, suba a `version` em `src-tauri/tauri.conf.json` e `package.json`. |
 
 ---
 
@@ -184,6 +191,8 @@ O planejamento vive nas [issues do GitHub](https://github.com/RafaelPulzi/financ
 - **#9** — análise semanal (segunda a domingo).
 - **#10** — dividir uma transação entre várias categorias.
 
-## Licença
+## Distribuição e licença
 
-Ainda não há licença definida, e o repositório no GitHub é privado. Para que outras pessoas possam usar e contribuir, é preciso escolher uma licença (ex.: MIT ou GPL-3.0) e tornar o repositório público — ou convidá-las. Até lá, o código é de uso do autor.
+O **instalador** é público: vive nos releases de [finance-compass-releases](https://github.com/RafaelPulzi/finance-compass-releases), um repositório público que contém só o README de apresentação e os binários — é também onde quem usa o app pode abrir issues. Publicar uma versão nova é rodar `.\scripts\release.ps1` (veja [Scripts](#scripts)).
+
+O **código-fonte** segue privado e sem licença definida. Para abri-lo a contribuições seria preciso escolher uma licença (ex.: MIT ou GPL-3.0) e tornar este repositório público; até lá, o código é de uso do autor, distribuído apenas como binário.

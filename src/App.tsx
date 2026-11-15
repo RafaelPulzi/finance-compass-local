@@ -19,6 +19,7 @@ import { ImportPanel } from "./ui/ImportPanel";
 import { RulesPanel } from "./ui/RulesPanel";
 import { TransactionsPanel } from "./ui/TransactionsPanel";
 import { VaultPanel } from "./ui/VaultPanel";
+import { WishlistPanel } from "./ui/WishlistPanel";
 import { monthLongLabel } from "./ui/charts/format";
 import { todayISO } from "./ui/labels";
 
@@ -29,6 +30,7 @@ const NAV = [
   { to: "/categorias", label: "Categorias" },
   { to: "/regras", label: "Regras" },
   { to: "/orcamentos", label: "Orçamentos" },
+  { to: "/desejos", label: "Desejos" },
   { to: "/cofre", label: "Cofre" },
 ];
 
@@ -185,6 +187,14 @@ function Shell() {
           <Route path="/categorias" element={<CategoriesPanel />} />
           <Route path="/regras" element={<RulesPanel />} />
           <Route path="/orcamentos" element={<BudgetsPanel month={month} />} />
+          <Route
+            path="/desejos"
+            element={
+              <div className="max-w-2xl">
+                <WishlistPanel />
+              </div>
+            }
+          />
           <Route
             path="/cofre"
             element={

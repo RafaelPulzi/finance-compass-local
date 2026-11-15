@@ -71,7 +71,7 @@ function seedFolder(dir: string, vault: Vault): void {
 
 function vaultWith(partial: Partial<Vault>): Vault {
   return {
-    schemaVersion: 4,
+    schemaVersion: 5,
     accounts: [],
     groups: [],
     categories: [],
@@ -80,6 +80,7 @@ function vaultWith(partial: Partial<Vault>): Vault {
     budgets: [],
     imports: [],
     dismissedTransferPairs: [],
+    wishes: [],
     ...partial,
   };
 }

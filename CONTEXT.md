@@ -49,6 +49,14 @@ _Avoid_: Auto-category, prediction, guess
 A monthly spending limit set for a single expense Category (e.g. Groceries = R$800/month). The app compares the calendar month's actual Expenses in that Category against the limit. Unspent amounts do not roll over to the next month.
 _Avoid_: Allowance, cap, envelope
 
+**Wish**:
+Something the user wants to buy but has agreed to wait for first: 48 hours for a cheaper item, 30 days for an expensive one (R$ 500,00 and up). The wait starts when the Wish is added and is derived from its price, never stored. Buying is refused until the wait ends (ADR-0009); giving the Wish up is allowed at any moment. A bought Wish records a decision only — the actual Expense arrives later, through a Statement.
+_Avoid_: Wishlist item, purchase intention, cart
+
+**Dropped (Wish)**:
+The state of a Wish the user decided not to buy. Dropping is allowed mid-wait — deciding *not* to spend is what the list is for — and the dropped Wishes' prices add up to money the user did not spend.
+_Avoid_: Cancelled, abandoned, expired
+
 ## Importing
 
 **Statement**:

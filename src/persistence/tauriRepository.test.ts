@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { centavos } from "../domain/money";
-import { VAULT_SCHEMA_VERSION } from "../domain/types";
+import { VAULT_COLLECTIONS, VAULT_SCHEMA_VERSION } from "../domain/types";
 import type { Vault } from "../domain/types";
 
 /**
@@ -62,7 +62,7 @@ const DIR = "/d/Financas/Cofre";
 
 function vaultWith(partial: Partial<Vault> = {}): Vault {
   return {
-    schemaVersion: 4,
+    schemaVersion: 5,
     accounts: [],
     groups: [],
     categories: [],
@@ -71,6 +71,7 @@ function vaultWith(partial: Partial<Vault> = {}): Vault {
     budgets: [],
     imports: [],
     dismissedTransferPairs: [],
+    wishes: [],
     ...partial,
   };
 }
@@ -97,6 +98,7 @@ describe("createTauriRepository", () => {
       `${DIR}/meta.json`,
       `${DIR}/rules.json`,
       `${DIR}/transactions.json`,
+      `${DIR}/wishes.json`,
     ]);
   });
 
@@ -184,7 +186,7 @@ describe("createTauriRepository", () => {
     );
 
     const loaded = await createTauriRepository(DIR).load();
-    expect(loaded?.schemaVersion).toBe(4);
+    expect(loaded?.schemaVersion).toBe(VAULT_SCHEMA_VERSION);
     expect(loaded?.transactions[0]).not.toHaveProperty("recoveredFrom");
     // v2 had no dismissed-transfers file at all.
     expect(loaded?.dismissedTransferPairs).toEqual([]);
@@ -269,7 +271,8 @@ describe("surviving an interrupted save", () => {
     await createTauriRepository(DIR).save(before);
 
     const writes = fs.log.filter((op) => op.startsWith("write "));
-    expect(writes.length).toBe(9);
+    // One file per collection, plus the meta marker.
+    expect(writes.length).toBe(VAULT_COLLECTIONS.length + 1);
     expect(writes.every((op) => op.endsWith(".tmp"))).toBe(true);
     for (const write of writes) {
       const temp = write.slice("write ".length);
@@ -349,7 +352,7 @@ describe("surviving an interrupted save", () => {
 });
 
 describe("a vault written before Rules existed", () => {
-  it("reads a v3 vault as v4 with no Rules", async () => {
+  it("reads a v3 vault at the current version with no Rules", async () => {
     fs.dirs.add(DIR);
     fs.files.set(`${DIR}/meta.json`, JSON.stringify({ schemaVersion: 3 }));
     fs.files.set(
@@ -369,7 +372,7 @@ describe("a vault written before Rules existed", () => {
 
     const loaded = await createTauriRepository(DIR).load();
 
-    expect(loaded?.schemaVersion).toBe(4);
+    expect(loaded?.schemaVersion).toBe(VAULT_SCHEMA_VERSION);
     expect(loaded?.rules).toEqual([]);
     // Every Category in a v3 vault was assigned by hand, which is what a
     // missing ruleId already says.

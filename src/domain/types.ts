@@ -165,6 +165,41 @@ export function isBudgeted(budget: Budget): boolean {
   return budget.monthlyLimit > 0;
 }
 
+// --- Wishes ---------------------------------------------------------------
+
+/**
+ * How a Wish left the list: the user bought the item, or decided not to.
+ * An open Wish has no decision yet.
+ */
+export type WishDecision = "bought" | "dropped";
+
+/**
+ * Something the user wants to buy but has agreed to wait for first: 48 hours
+ * for a cheaper item, 30 days for an expensive one (see docs/adr/0009 and
+ * domain/wishes.ts, which owns the threshold and the two waits).
+ *
+ * The wait is *derived* from `price` and `createdAt`, never stored — the same
+ * posture as Account balances. There is nothing to recompute, nothing to drift,
+ * and no stored deadline a bug could shorten.
+ */
+export interface Wish {
+  id: Id;
+  name: string;
+  /** What the item costs, which is what decides how long the wait is. */
+  price: Centavos;
+  /** ISO timestamp of when the user added it; the wait counts from here. */
+  createdAt: string;
+  /** Present once the user decided; absent while the Wish is open. */
+  decision?: WishDecision;
+  /** ISO timestamp of the decision, present exactly when `decision` is. */
+  decidedAt?: string;
+}
+
+/** Whether the user has not yet said yes or no to this Wish. */
+export function isOpenWish(wish: Wish): boolean {
+  return wish.decision === undefined;
+}
+
 // --- Imports --------------------------------------------------------------
 
 /**
@@ -207,8 +242,10 @@ export interface DismissedTransferPair {
  * remembers candidate pairs the user dismissed (see docs/adr/0006).
  * v4 adds classification Rules, and the Rule that classified a Transaction
  * (see docs/adr/0008).
+ * v5 adds Wishes — items the user wants to buy, held behind a waiting period
+ * before they may be bought (see docs/adr/0009).
  */
-export const VAULT_SCHEMA_VERSION = 4 as const;
+export const VAULT_SCHEMA_VERSION = 5 as const;
 
 /** The whole in-memory model, mirrored to the JSON files in the vault folder. */
 export interface Vault {
@@ -222,6 +259,7 @@ export interface Vault {
   budgets: Budget[];
   imports: ImportRecord[];
   dismissedTransferPairs: DismissedTransferPair[];
+  wishes: Wish[];
 }
 
 /**
@@ -240,6 +278,7 @@ export const VAULT_COLLECTIONS = [
   "budgets",
   "imports",
   "dismissedTransferPairs",
+  "wishes",
 ] as const satisfies readonly (keyof Vault)[];
 
 export type VaultCollection = (typeof VAULT_COLLECTIONS)[number];

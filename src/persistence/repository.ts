@@ -39,6 +39,7 @@ export interface VaultFolderPick {
  * v3 -> v4: there are no Rules, so no Transaction was classified by one; every
  * Category in a v3 vault was assigned by hand, which is what a missing `ruleId`
  * already says.
+ * v4 -> v5: there are no Wishes yet, so the collection is simply empty.
  * A vault written by a *newer* app version is refused rather than silently
  * half-read, so an unknown field can't be dropped on the next save.
  */

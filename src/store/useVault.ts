@@ -17,6 +17,8 @@ import * as txEdit from "../domain/transactionEdit";
 import type { TransactionEdit } from "../domain/transactionEdit";
 import * as detection from "../domain/transferDetection";
 import * as recovery from "../domain/transferRecovery";
+import * as wishRules from "../domain/wishes";
+import type { WishInput } from "../domain/wishes";
 import type { SkippedEntry } from "../domain/transferRecovery";
 import type {
   Account,
@@ -225,6 +227,15 @@ interface VaultState {
   acceptTransferPair: (outgoingId: Id, incomingId: Id) => ActionResult;
   /** Say no to a candidate pair, so it is never offered again. */
   dismissTransferPair: (a: Id, b: Id) => ActionResult;
+
+  /** Add a Wish; its waiting period (48h or 30 days by price) starts now. */
+  addWish: (input: WishInput) => ActionResult;
+  /** Buy a Wish. Refused while its wait is still running — that's the feature. */
+  buyWish: (wishId: Id) => ActionResult;
+  /** Give a Wish up. Allowed at any moment, wait or no wait. */
+  dropWish: (wishId: Id) => ActionResult;
+  /** Remove a decided Wish from the history. */
+  deleteWish: (wishId: Id) => ActionResult;
 }
 
 /**
@@ -512,5 +523,24 @@ export const useVault = create<VaultState>((set, get) => {
     dismissTransferPair(a, b) {
       return run((v) => detection.dismissTransferPair(v, a, b));
     },
+
+    addWish(input) {
+      return run((v) => wishRules.addWish(v, input, wishDeps));
+    },
+
+    buyWish(wishId) {
+      return run((v) => wishRules.buyWish(v, wishId, wishDeps));
+    },
+
+    dropWish(wishId) {
+      return run((v) => wishRules.dropWish(v, wishId, wishDeps));
+    },
+
+    deleteWish(wishId) {
+      return run((v) => wishRules.deleteWish(v, wishId));
+    },
   };
 });
+
+/** The session's clock and ids, bound once: commands themselves stay pure. */
+const wishDeps = { newId, now: () => new Date().toISOString() };

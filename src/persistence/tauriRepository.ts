@@ -32,6 +32,7 @@ const COLLECTION_FILES: Record<VaultCollection, string> = {
   budgets: "budgets.json",
   imports: "imports.json",
   dismissedTransferPairs: "dismissed-transfers.json",
+  wishes: "wishes.json",
 };
 
 const NAMES = { meta: VAULT_MARKER, ...COLLECTION_FILES } as const;

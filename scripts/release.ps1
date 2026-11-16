@@ -8,8 +8,11 @@
 # onde o instalador tira o nome do arquivo, para que os dois nunca discordem.
 #
 # Uso:  .\scripts\release.ps1 -NotesFile notas.md
-# Antes: suba a "version" em src-tauri/tauri.conf.json E package.json,
-# escreva as notas da versão num arquivo, e esteja na main, limpa.
+# Antes: suba a "version" em src-tauri/tauri.conf.json, package.json
+# (com o package-lock.json) e src-tauri/Cargo.toml (com o Cargo.lock —
+# o nome do instalador vem do tauri.conf.json, mas o log do build diz a
+# versão do Cargo.toml e mentiria), escreva as notas da versão num
+# arquivo, e esteja na main, limpa.
 
 param(
   [Parameter(Mandatory = $true)]

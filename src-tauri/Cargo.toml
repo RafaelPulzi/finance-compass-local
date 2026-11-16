@@ -1,10 +1,10 @@
 [package]
 name = "finance-compass"
-version = "0.1.0"
+version = "0.2.0"
 description = "Finance Compass — a local-first personal finance tracker"
 authors = ["Rafael Pulzi"]
-license = ""
-repository = ""
+license = "MIT"
+repository = "https://github.com/RafaelPulzi/finance-compass-local"
 edition = "2024"
 rust-version = "1.90"
 

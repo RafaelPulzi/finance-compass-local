@@ -2,7 +2,7 @@
 
 Organizador de finanças pessoais **local-first** para desktop. Você importa os extratos do seu banco, classifica para onde o dinheiro foi, define orçamentos e acompanha tudo num painel — e os seus dados nunca saem do seu computador: ficam numa pasta sua, como arquivos JSON que você pode abrir, copiar e versionar.
 
-> Versão 0.1.0, em desenvolvimento ativo. Feito e testado no Windows 11; a interface é em português e os valores são em reais (BRL).
+> Versão 0.2.0, em desenvolvimento ativo. Feito e testado no Windows 11; a interface é em português e os valores são em reais (BRL).
 
 ## O que ele faz hoje
 
@@ -15,6 +15,7 @@ Organizador de finanças pessoais **local-first** para desktop. Você importa os
 | **Regras** | Página própria: "descrição contém `IFOOD` → Restaurantes", testadas na ordem que você define, aplicadas na importação e, sob confirmação, ao que já está sem categoria. Nunca mudam uma categoria que você escolheu. Depois de classificar à mão, o app oferece guardar aquilo como regra. |
 | **Categorias** | Página própria para criar, renomear e mover categorias entre grupos. Excluir só é permitido quando nada mais usa a categoria. Cofres novos já vêm com 43 categorias brasileiras em 14 grupos. |
 | **Orçamentos** | Limite mensal por categoria de despesa, com medidor de "no limite / perto / acima". |
+| **Desejos** | Lista de desejos anticonsumismo: anote o que quer comprar e espere — 48 horas para itens de menor valor, 30 dias a partir de R$ 500,00. Comprar antes do prazo é recusado; desistir pode a qualquer momento, e o app soma quanto você deixou de gastar. |
 | **Painel** | Receitas, despesas e saldo do mês; gastos por categoria; receitas × despesas dos últimos 6 meses. Todo gráfico tem uma visão em tabela. |
 | **Cofre** | Escolher outra pasta (pendrive, pasta sincronizada…), estilo Obsidian. Gravação atômica e aviso claro se algo não pôde ser salvo. |
 
@@ -56,7 +57,7 @@ Por padrão, em:
 
 | Arquivo | Conteúdo |
 | --- | --- |
-| `meta.json` | Versão do formato (hoje, 4). É o que marca a pasta como um cofre. |
+| `meta.json` | Versão do formato (hoje, 5). É o que marca a pasta como um cofre. |
 | `accounts.json` | Contas e saldos iniciais. |
 | `transactions.json` | Todas as transações. Valores em **centavos inteiros** (`4990` = R$ 49,90). |
 | `groups.json`, `categories.json` | Grupos e categorias. |
@@ -64,6 +65,7 @@ Por padrão, em:
 | `budgets.json` | Limites mensais. |
 | `imports.json` | Histórico de importações. |
 | `dismissed-transfers.json` | Sugestões de transferência que você recusou. |
+| `wishes.json` | Sua lista de desejos e as decisões tomadas. |
 
 - **Backup:** feche o app e copie a pasta inteira. Restaurar é copiar de volta.
 - **Mudar de lugar:** na aba **Cofre**, "Escolher outra pasta…". Uma pasta vazia recebe o cofre atual; uma pasta que já tem um cofre é aberta.
@@ -110,8 +112,8 @@ npm run tauri build
 Tempos medidos numa cópia limpa (Windows 11, 2026-11-07): `npm ci` ≈ 40 s, testes ≈ 30 s, typecheck + lint + build ≈ 10 s, instalador ≈ 4 min na primeira vez (o Rust compila tudo do zero; depois fica bem mais rápido). O instalador sai em dois formatos:
 
 ```
-src-tauri/target/release/bundle/nsis/Finance Compass_0.1.0_x64-setup.exe   (≈ 2,3 MB)
-src-tauri/target/release/bundle/msi/Finance Compass_0.1.0_x64_en-US.msi    (≈ 3,4 MB)
+src-tauri/target/release/bundle/nsis/Finance Compass_0.2.0_x64-setup.exe   (≈ 2,3 MB)
+src-tauri/target/release/bundle/msi/Finance Compass_0.2.0_x64_en-US.msi    (≈ 3,4 MB)
 ```
 
 Como o instalador ainda não é assinado digitalmente, o Windows pode mostrar o aviso "O Windows protegeu o computador" — clique em "Mais informações → Executar assim mesmo".

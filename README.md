@@ -195,4 +195,4 @@ O planejamento vive nas [issues do GitHub](https://github.com/RafaelPulzi/financ
 
 O **instalador** é público: vive nos releases de [finance-compass-releases](https://github.com/RafaelPulzi/finance-compass-releases), um repositório público que contém só o README de apresentação e os binários — é também onde quem usa o app pode abrir issues. Publicar uma versão nova é rodar `.\scripts\release.ps1` (veja [Scripts](#scripts)).
 
-O **código-fonte** segue privado e sem licença definida. Para abri-lo a contribuições seria preciso escolher uma licença (ex.: MIT ou GPL-3.0) e tornar este repositório público; até lá, o código é de uso do autor, distribuído apenas como binário.
+O software é licenciado sob a **licença MIT** — veja [`LICENSE`](LICENSE). O repositório do código ainda é privado: as issues, PRs e mensagens de commit deste repositório citam números reais das finanças do autor, então torná-lo público é uma decisão separada da licença (um espelho público com histórico limpo é o caminho seguro, se e quando fizer sentido).

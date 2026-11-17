@@ -8,6 +8,10 @@ A local-first personal-finance tracker. The user logs money as it moves and the 
 The folder on the user's own machine where all their financial data lives as plain files. The user owns it, can inspect it, move it, and back it up themselves (the Obsidian model). The app reads and writes a Vault; it never holds the only copy.
 _Avoid_: Database, workspace, profile
 
+**Command**:
+One change to the Vault, decided but not yet made. A Command is built from the user's input (`classifyAs(ids, categoryId)`), is pure — given the Vault and the session's ids and clock, it answers with the whole Vault it would leave behind, or why it refuses — and only the store's single `run` ever executes one and writes the result (ADR-0010). Every write in the app is a Command; nothing else may change a Vault.
+_Avoid_: Action, mutation, handler, setter
+
 **Transaction**:
 A single record of money moving on a given date. Every Transaction is exactly one of three kinds — Income, Expense, or Transfer.
 _Avoid_: Entry, record, movement, posting

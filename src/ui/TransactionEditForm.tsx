@@ -3,7 +3,7 @@ import { treeHas } from "../domain/categories";
 import { parseBRL } from "../domain/money";
 import type { TransactionEdit } from "../domain/transactionEdit";
 import type { Account, Transaction } from "../domain/types";
-import type { TransactionEditResult } from "../store/useVault";
+import type { ActionResult } from "../domain/command";
 import { CategoryOptions, type CategoryTree } from "./CategoryOptions";
 
 type EditableKind = "income" | "expense";
@@ -18,7 +18,7 @@ interface Props {
   accounts: readonly Account[];
   treesByKind: Record<EditableKind, CategoryTree>;
   /** Returns the store's verdict: a refused edit is reported, not swallowed. */
-  onSave: (changes: TransactionEdit) => TransactionEditResult;
+  onSave: (changes: TransactionEdit) => ActionResult;
   onCancel: () => void;
 }
 

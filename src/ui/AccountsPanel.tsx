@@ -1,9 +1,16 @@
 import { type FormEvent, useState } from "react";
-import { type AccountInput, accountTransactionCount } from "../domain/accounts";
+import {
+  type AccountInput,
+  accountTransactionCount,
+  addAccount,
+  deleteAccount,
+  editAccount,
+} from "../domain/accounts";
 import { deriveAccountBalance } from "../domain/balances";
+import type { ActionResult } from "../domain/command";
 import { formatBRL, formatBRLInput, parseBRL } from "../domain/money";
 import type { Account, AccountType } from "../domain/types";
-import { type ActionResult, useVault } from "../store/useVault";
+import { useVault } from "../store/useVault";
 import { ACCOUNT_TYPES, ACCOUNT_TYPE_LABELS } from "./labels";
 
 const inputClass =
@@ -80,9 +87,7 @@ function readDraft(
 
 export function AccountsPanel() {
   const vault = useVault((s) => s.vault);
-  const addAccount = useVault((s) => s.addAccount);
-  const editAccount = useVault((s) => s.editAccount);
-  const deleteAccount = useVault((s) => s.deleteAccount);
+  const run = useVault((s) => s.run);
 
   const [draft, setDraft] = useState<Draft>({ name: "", type: "checking", opening: "0,00" });
   const [error, setError] = useState<string | null>(null);
@@ -97,7 +102,7 @@ export function AccountsPanel() {
     e.preventDefault();
     const read = readDraft(draft);
     if (!read.ok) return setError(read.message);
-    const result = addAccount(read.input);
+    const result = run(addAccount(read.input));
     if (!result.ok) return setError(result.message);
     setDraft({ name: "", type: "checking", opening: "0,00" });
     setError(null);
@@ -122,7 +127,7 @@ export function AccountsPanel() {
     if (editing === null) return;
     const read = readDraft(editing.draft);
     if (!read.ok) return setEditError(read.message);
-    const result: ActionResult = editAccount(editing.id, read.input);
+    const result: ActionResult = run(editAccount(editing.id, read.input));
     if (!result.ok) return setEditError(result.message);
     setEditing(null);
     setEditError(null);
@@ -200,7 +205,7 @@ export function AccountsPanel() {
                     type="button"
                     className="rounded-md bg-red-600 px-2 py-0.5 font-medium text-white hover:bg-red-700"
                     onClick={() => {
-                      const result = deleteAccount(account.id);
+                      const result = run(deleteAccount(account.id));
                       setDeletingId(null);
                       setRowError(result.ok ? null : { id: account.id, message: result.message });
                     }}

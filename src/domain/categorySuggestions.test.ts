@@ -4,9 +4,15 @@ import {
   decisionKey,
   suggestCategories,
 } from "./categorySuggestions";
+import type { SessionContext } from "./command";
 import { centavos } from "./money";
 import type { Transaction, Vault } from "./types";
 import { emptyVault } from "./types";
+
+const ctx: SessionContext = {
+  newId: () => "id-test",
+  now: () => "2026-11-16T00:00:00.000Z",
+};
 
 const INTER = "acc-inter";
 
@@ -159,7 +165,7 @@ describe("applySuggestions", () => {
     const b = tx({ description: "IFOOD *IFOOD 300018" });
     const vault = { ...base, transactions: [...habit, a, b] };
 
-    const outcome = applySuggestions(vault);
+    const outcome = applySuggestions()(vault, ctx);
     expect(outcome.ok).toBe(true);
     if (!outcome.ok) return;
     expect(outcome.applied).toBe(2);
@@ -172,7 +178,7 @@ describe("applySuggestions", () => {
 
   it("returns the same Vault when there is nothing to apply, so nothing is saved", () => {
     const vault = { ...base, transactions: [...habit] };
-    const outcome = applySuggestions(vault);
+    const outcome = applySuggestions()(vault, ctx);
     expect(outcome.ok && outcome.applied).toBe(0);
     expect(outcome.ok && outcome.vault).toBe(vault);
   });
@@ -182,10 +188,10 @@ describe("applySuggestions", () => {
       ...base,
       transactions: [...habit, tx({ description: "IFOOD *IFOOD 300017" })],
     };
-    const first = applySuggestions(vault);
+    const first = applySuggestions()(vault, ctx);
     if (!first.ok) throw new Error("first apply refused");
     expect(first.applied).toBe(1);
-    const second = applySuggestions(first.vault);
+    const second = applySuggestions()(first.vault, ctx);
     expect(second.ok && second.applied).toBe(0);
     expect(second.ok && second.vault).toBe(first.vault);
   });
@@ -193,7 +199,7 @@ describe("applySuggestions", () => {
   it("never touches a Category the user set by hand", () => {
     const decided = tx({ description: "IFOOD *IFOOD 300017", categoryId: "cat-market" });
     const vault = { ...base, transactions: [...habit, decided] };
-    const outcome = applySuggestions(vault);
+    const outcome = applySuggestions()(vault, ctx);
     if (!outcome.ok) throw new Error("apply refused");
     const kept = outcome.vault.transactions.find((t) => t.id === decided.id);
     expect(kept?.kind !== "transfer" && kept?.categoryId).toBe("cat-market");

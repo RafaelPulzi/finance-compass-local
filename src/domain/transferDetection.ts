@@ -1,4 +1,4 @@
-import type { CommandOutcome } from "./command";
+import type { VaultCommand } from "./command";
 import type { Centavos } from "./money";
 import type {
   Id,
@@ -178,12 +178,8 @@ export function findTransferCandidates(vault: Vault): TransferCandidate[] {
  * spending. Dismissals naming either entry go with them: they described
  * Transactions that no longer exist.
  */
-export function acceptTransferPair(
-  vault: Vault,
-  outgoingId: Id,
-  incomingId: Id,
-  newId: () => Id,
-): CommandOutcome {
+export function acceptTransferPair(outgoingId: Id, incomingId: Id): VaultCommand {
+  return (vault, ctx) => {
   const outgoing = vault.transactions.find((tx) => tx.id === outgoingId);
   const incoming = vault.transactions.find((tx) => tx.id === incomingId);
   if (outgoing === undefined || incoming === undefined) {
@@ -208,7 +204,7 @@ export function acceptTransferPair(
   }
 
   const transfer: TransferTransaction = {
-    id: newId(),
+    id: ctx.newId(),
     kind: "transfer",
     date: outgoing.date,
     amount: outgoing.amount,
@@ -228,6 +224,7 @@ export function acceptTransferPair(
       ),
     },
   };
+  };
 }
 
 /**
@@ -236,27 +233,29 @@ export function acceptTransferPair(
  * Dismissing changes no Transaction, and dismissing the same pair twice — in
  * either order — is the same single dismissal.
  */
-export function dismissTransferPair(vault: Vault, a: Id, b: Id): CommandOutcome {
-  if (a === b) {
-    return { ok: false, message: "Um par são dois lançamentos diferentes." };
-  }
-  const exists = (id: Id) => vault.transactions.some((tx) => tx.id === id);
-  if (!exists(a) || !exists(b)) {
-    return { ok: false, message: "Transação não encontrada." };
-  }
-  const key = pairKey(a, b);
-  const already = vault.dismissedTransferPairs.some(
-    (pair) => pairKey(pair.transactionIds[0], pair.transactionIds[1]) === key,
-  );
-  if (already) return { ok: true, vault };
-  return {
-    ok: true,
-    vault: {
-      ...vault,
-      dismissedTransferPairs: [
-        ...vault.dismissedTransferPairs,
-        { transactionIds: [a, b] },
-      ],
-    },
+export function dismissTransferPair(a: Id, b: Id): VaultCommand {
+  return (vault) => {
+    if (a === b) {
+      return { ok: false, message: "Um par são dois lançamentos diferentes." };
+    }
+    const exists = (id: Id) => vault.transactions.some((tx) => tx.id === id);
+    if (!exists(a) || !exists(b)) {
+      return { ok: false, message: "Transação não encontrada." };
+    }
+    const key = pairKey(a, b);
+    const already = vault.dismissedTransferPairs.some(
+      (pair) => pairKey(pair.transactionIds[0], pair.transactionIds[1]) === key,
+    );
+    if (already) return { ok: true, vault };
+    return {
+      ok: true,
+      vault: {
+        ...vault,
+        dismissedTransferPairs: [
+          ...vault.dismissedTransferPairs,
+          { transactionIds: [a, b] },
+        ],
+      },
+    };
   };
 }

@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
+import type { SessionContext } from "./command";
 import { centavos } from "./money";
 import type { OfxEntry } from "./ofx";
-import { planImport, toTransactions } from "./statementImport";
-import type { Transaction } from "./types";
+import { commitImport, planImport, toTransactions } from "./statementImport";
+import type { Rule, Transaction, Vault } from "./types";
+import { emptyVault } from "./types";
 
 const entry = (fitid: string, amount: number, date = "2026-01-05"): OfxEntry => ({
   fitid,
@@ -192,5 +194,105 @@ describe("dedup against Transfers recovered from imported entries", () => {
     };
 
     expect(planImport([movedEntry("bank-1")], ACC, [handEntered]).additions).toHaveLength(1);
+  });
+});
+
+describe("commitImport, as a Command", () => {
+  const ACC_ID = "acc-inter";
+  const vault: Vault = {
+    ...emptyVault(),
+    accounts: [
+      { id: ACC_ID, name: "Banco Inter", type: "checking", openingBalance: centavos(0) },
+    ],
+    groups: [{ id: "g-food", name: "Alimentação", kind: "expense" }],
+    categories: [{ id: "cat-market", name: "Mercado", groupId: "g-food" }],
+  };
+
+  let n = 0;
+  const ctx: SessionContext = {
+    newId: () => `id-${++n}`,
+    now: () => "2026-11-16T09:30:00.000Z",
+  };
+
+  const marketRule: Rule = {
+    id: "r-1",
+    pattern: "entry a",
+    categoryId: "cat-market",
+    kind: "expense",
+  };
+
+  it("adds the planned entries and records what the Import did", () => {
+    const plan = planImport([entry("a", -1000), entry("b", 2000)], ACC_ID, []);
+
+    const outcome = commitImport({ plan, fileName: "extrato.ofx" })(vault, ctx);
+    if (!outcome.ok) throw new Error(outcome.message);
+
+    expect(outcome.added).toBe(2);
+    expect(outcome.vault.transactions).toHaveLength(2);
+    expect(outcome.vault.imports).toEqual([
+      {
+        id: expect.any(String),
+        accountId: ACC_ID,
+        importedAt: "2026-11-16T09:30:00.000Z",
+        fileName: "extrato.ofx",
+        added: 2,
+        skipped: 0,
+      },
+    ]);
+  });
+
+  it("records the entries it skipped, so the history is honest about them", () => {
+    const entries = [entry("a", -1000), entry("a", -1000)];
+    const plan = planImport(entries, ACC_ID, []);
+
+    const outcome = commitImport({ plan, fileName: "extrato.ofx" })(vault, ctx);
+    if (!outcome.ok) throw new Error(outcome.message);
+    expect(outcome.vault.imports[0]).toMatchObject({ added: 1, skipped: 1 });
+  });
+
+  it("runs the Rules over its own additions, so a routine month arrives classified", () => {
+    const plan = planImport([entry("a", -1000), entry("b", 2000)], ACC_ID, []);
+    const withRule: Vault = { ...vault, rules: [marketRule] };
+
+    const outcome = commitImport({ plan, fileName: "extrato.ofx" })(withRule, ctx);
+    if (!outcome.ok) throw new Error(outcome.message);
+
+    expect(outcome.classified).toBe(1);
+    const classified = outcome.vault.transactions.find((t) => t.description === "entry a");
+    expect(classified?.kind !== "transfer" && classified?.categoryId).toBe("cat-market");
+    expect(classified?.kind !== "transfer" && classified?.ruleId).toBe("r-1");
+  });
+
+  it("offers the Rules only its own additions, never the backlog", () => {
+    const backlog: Transaction = {
+      id: "old",
+      kind: "expense",
+      date: "2026-09-01",
+      amount: centavos(500),
+      description: "entry a from months ago",
+      accountId: ACC_ID,
+      categoryId: null,
+    };
+    const withBacklog: Vault = { ...vault, rules: [marketRule], transactions: [backlog] };
+    const plan = planImport([entry("b", 2000)], ACC_ID, withBacklog.transactions);
+
+    const outcome = commitImport({ plan, fileName: "extrato.ofx" })(withBacklog, ctx);
+    if (!outcome.ok) throw new Error(outcome.message);
+
+    expect(outcome.classified).toBe(0);
+    const old = outcome.vault.transactions.find((t) => t.id === "old");
+    expect(old?.kind !== "transfer" && old?.categoryId).toBeNull();
+  });
+
+  it("imports exactly as before when the vault has no Rules", () => {
+    const plan = planImport([entry("a", -1000)], ACC_ID, []);
+
+    const outcome = commitImport({ plan, fileName: "extrato.ofx" })(vault, ctx);
+    if (!outcome.ok) throw new Error(outcome.message);
+
+    expect(outcome.classified).toBe(0);
+    const added = outcome.vault.transactions[0];
+    expect(added.kind !== "transfer" && added.categoryId).toBeNull();
+    expect(added.kind !== "transfer" && added.ruleId).toBeUndefined();
   });
 });

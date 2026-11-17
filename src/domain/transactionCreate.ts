@@ -1,4 +1,4 @@
-import type { CommandOutcome } from "./command";
+import type { VaultCommand } from "./command";
 import type { Centavos } from "./money";
 import {
   badAmount,
@@ -48,17 +48,15 @@ export type CreateOutcome =
  * says "income", "expense" or "transfer" in the input instead of picking one of
  * three entry points that only differ in that word.
  */
-export function addTransaction(
-  vault: Vault,
-  input: NewTransaction,
-  id: Id,
-): CommandOutcome<{ transaction: Transaction }> {
-  const outcome = createdTransaction(vault, input, id);
-  if (!outcome.ok) return outcome;
-  return {
-    ok: true,
-    vault: { ...vault, transactions: [...vault.transactions, outcome.transaction] },
-    transaction: outcome.transaction,
+export function addTransaction(input: NewTransaction): VaultCommand<{ transaction: Transaction }> {
+  return (vault, ctx) => {
+    const outcome = createdTransaction(vault, input, ctx.newId());
+    if (!outcome.ok) return outcome;
+    return {
+      ok: true,
+      vault: { ...vault, transactions: [...vault.transactions, outcome.transaction] },
+      transaction: outcome.transaction,
+    };
   };
 }
 

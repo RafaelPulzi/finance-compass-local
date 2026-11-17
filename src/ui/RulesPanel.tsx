@@ -2,11 +2,17 @@ import { type FormEvent, useMemo, useState } from "react";
 import { categoryTree } from "../domain/categories";
 import { uncategorizedCount } from "../domain/transactionQuery";
 import {
+  addRule,
+  applyRulesToUncategorized,
+  deleteRule,
+  editRule,
+  moveRule,
   pendingRuleCount,
   ruleMatchCounts,
 } from "../domain/classificationRules";
 import type { CategoryKind, Id } from "../domain/types";
-import { type ActionResult, useVault } from "../store/useVault";
+import type { ActionResult } from "../domain/command";
+import { useVault } from "../store/useVault";
 import { CategoryOptions } from "./CategoryOptions";
 
 const inputClass =
@@ -35,11 +41,7 @@ type Editing = { id: Id; pattern: string; categoryId: Id } | null;
  */
 export function RulesPanel() {
   const vault = useVault((s) => s.vault);
-  const addRule = useVault((s) => s.addRule);
-  const editRule = useVault((s) => s.editRule);
-  const deleteRule = useVault((s) => s.deleteRule);
-  const moveRule = useVault((s) => s.moveRule);
-  const applyRulesToUncategorized = useVault((s) => s.applyRulesToUncategorized);
+  const run = useVault((s) => s.run);
 
   const trees = useMemo(
     () => ({
@@ -77,7 +79,7 @@ export function RulesPanel() {
 
   function submitNew(e: FormEvent) {
     e.preventDefault();
-    const outcome = addRule({ pattern, categoryId });
+    const outcome = run(addRule({ pattern, categoryId }));
     if (!outcome.ok) return setMessage({ tone: "error", text: outcome.message });
     setMessage(null);
     setPattern("");
@@ -87,15 +89,15 @@ export function RulesPanel() {
   function submitEdit(e: FormEvent) {
     e.preventDefault();
     if (editing === null) return;
-    const result = editRule(editing.id, {
-      pattern: editing.pattern,
-      categoryId: editing.categoryId,
-    });
+    const result = run(
+      editRule(editing.id, { pattern: editing.pattern, categoryId: editing.categoryId }),
+    );
     if (report(result)) setEditing(null);
   }
 
   function apply() {
-    const { applied } = applyRulesToUncategorized();
+    const outcome = run(applyRulesToUncategorized());
+    const applied = outcome.ok ? outcome.applied : 0;
     setConfirmingApply(false);
     setMessage({
       tone: "ok",
@@ -218,7 +220,7 @@ export function RulesPanel() {
                   type="button"
                   className="rounded-md bg-red-600 px-2 py-1 text-xs font-medium text-white hover:bg-red-700"
                   onClick={() => {
-                    report(deleteRule(rule.id));
+                    report(run(deleteRule(rule.id)));
                     setDeletingId(null);
                   }}
                 >
@@ -253,7 +255,7 @@ export function RulesPanel() {
                     aria-label={`Mover a regra ${rule.pattern} para cima`}
                     className="underline hover:text-slate-700 disabled:opacity-30 dark:hover:text-slate-200"
                     disabled={index === 0}
-                    onClick={() => report(moveRule(rule.id, -1))}
+                    onClick={() => report(run(moveRule(rule.id, -1)))}
                   >
                     subir
                   </button>
@@ -262,7 +264,7 @@ export function RulesPanel() {
                     aria-label={`Mover a regra ${rule.pattern} para baixo`}
                     className="underline hover:text-slate-700 disabled:opacity-30 dark:hover:text-slate-200"
                     disabled={index === vault.rules.length - 1}
-                    onClick={() => report(moveRule(rule.id, 1))}
+                    onClick={() => report(run(moveRule(rule.id, 1)))}
                   >
                     descer
                   </button>

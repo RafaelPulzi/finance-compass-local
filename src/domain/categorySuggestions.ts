@@ -1,5 +1,5 @@
 import { categoryKind } from "./categories";
-import type { CommandOutcome } from "./command";
+import type { VaultCommand } from "./command";
 import { normalizeForSearch } from "./text";
 import type { Id, Transaction, Vault } from "./types";
 
@@ -116,23 +116,25 @@ export function suggestCategories(vault: Vault): CategorySuggestion[] {
  * these Transactions become evidence for future Suggestions in their own right.
  * Nothing to apply returns the same Vault, which the store reads as no save.
  */
-export function applySuggestions(vault: Vault): CommandOutcome<{ applied: number }> {
-  const suggestions = suggestCategories(vault);
-  if (suggestions.length === 0) return { ok: true, vault, applied: 0 };
+export function applySuggestions(): VaultCommand<{ applied: number }> {
+  return (vault) => {
+    const suggestions = suggestCategories(vault);
+    if (suggestions.length === 0) return { ok: true, vault, applied: 0 };
 
-  const byId = new Map(suggestions.map((s) => [s.transactionId, s.categoryId]));
-  return {
-    ok: true,
-    vault: {
-      ...vault,
-      transactions: vault.transactions.map((tx) => {
-        const categoryId = byId.get(tx.id);
-        // `suggestCategories` only ever names Uncategorized non-Transfers, so no
-        // further guard is needed: a Suggestion fills a gap by construction.
-        if (categoryId === undefined || tx.kind === "transfer") return tx;
-        return { ...tx, categoryId };
-      }),
-    },
-    applied: suggestions.length,
+    const byId = new Map(suggestions.map((s) => [s.transactionId, s.categoryId]));
+    return {
+      ok: true,
+      vault: {
+        ...vault,
+        transactions: vault.transactions.map((tx) => {
+          const categoryId = byId.get(tx.id);
+          // `suggestCategories` only ever names Uncategorized non-Transfers, so no
+          // further guard is needed: a Suggestion fills a gap by construction.
+          if (categoryId === undefined || tx.kind === "transfer") return tx;
+          return { ...tx, categoryId };
+        }),
+      },
+      applied: suggestions.length,
+    };
   };
 }

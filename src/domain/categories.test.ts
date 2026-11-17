@@ -67,6 +67,7 @@ const vault: Vault = {
 
 let n = 0;
 const makeId = () => `new-${++n}`;
+const ctx = { newId: makeId, now: () => "2026-11-16T00:00:00.000Z" };
 
 function changed<T extends { ok: boolean }>(outcome: T): Extract<T, { ok: true }> {
   if (!outcome.ok) throw new Error(`refused: ${(outcome as { message?: string }).message}`);
@@ -101,125 +102,125 @@ describe("categoryKind and usage", () => {
 
 describe("adding", () => {
   it("adds a Group with a trimmed name", () => {
-    const { vault: next, group } = changed(addGroup(vault, { name: "  Saúde  ", kind: "expense" }, makeId));
+    const { vault: next, group } = changed(addGroup({ name: "  Saúde  ", kind: "expense" })(vault, ctx));
     expect(group.name).toBe("Saúde");
     expect(next.groups).toContainEqual(group);
     expect(vault.groups).not.toContainEqual(group); // pure: the input is untouched
   });
 
   it("refuses an empty Group name", () => {
-    expect(refusal(addGroup(vault, { name: "   ", kind: "expense" }, makeId))).toMatch(/nome/);
+    expect(refusal(addGroup({ name: "   ", kind: "expense" })(vault, ctx))).toMatch(/nome/);
   });
 
   it("refuses a Group name already used for that kind, ignoring case and accents", () => {
-    expect(refusal(addGroup(vault, { name: "alimentacao", kind: "expense" }, makeId))).toMatch(
+    expect(refusal(addGroup({ name: "alimentacao", kind: "expense" })(vault, ctx))).toMatch(
       /Já existe/,
     );
   });
 
   it("allows the same Group name across kinds, since those lists never mix", () => {
-    expect(addGroup(vault, { name: "Renda", kind: "expense" }, makeId).ok).toBe(true);
+    expect(addGroup({ name: "Renda", kind: "expense" })(vault, ctx).ok).toBe(true);
   });
 
   it("adds a Category to an existing Group", () => {
     const { vault: next, category } = changed(
-      addCategory(vault, { name: "Delivery", groupId: "g-food" }, makeId),
+      addCategory({ name: "Delivery", groupId: "g-food" })(vault, ctx),
     );
     expect(next.categories).toContainEqual(category);
     expect(categoryKind(next, category.id)).toBe("expense");
   });
 
   it("refuses a Category in a Group that doesn't exist", () => {
-    expect(refusal(addCategory(vault, { name: "X", groupId: "nope" }, makeId))).toMatch(/Grupo/);
+    expect(refusal(addCategory({ name: "X", groupId: "nope" })(vault, ctx))).toMatch(/Grupo/);
   });
 
   it("refuses a duplicate Category within one Group, but allows it in another", () => {
-    expect(refusal(addCategory(vault, { name: "MERCADO", groupId: "g-food" }, makeId))).toMatch(
+    expect(refusal(addCategory({ name: "MERCADO", groupId: "g-food" })(vault, ctx))).toMatch(
       /já tem/,
     );
-    expect(addCategory(vault, { name: "Mercado", groupId: "g-home" }, makeId).ok).toBe(true);
+    expect(addCategory({ name: "Mercado", groupId: "g-home" })(vault, ctx).ok).toBe(true);
   });
 });
 
 describe("renaming", () => {
   it("renames a Category in place, keeping its id so every Transaction stays classified", () => {
-    const next = changed(renameCategory(vault, "c-market", "Supermercado")).vault;
+    const next = changed(renameCategory("c-market", "Supermercado")(vault, ctx)).vault;
     expect(next.categories.find((c) => c.id === "c-market")?.name).toBe("Supermercado");
     expect(categoryUsage(next, "c-market").transactions).toBe(2);
   });
 
   it("renames a Group", () => {
-    const next = changed(renameGroup(vault, "g-food", "Comida")).vault;
+    const next = changed(renameGroup("g-food", "Comida")(vault, ctx)).vault;
     expect(next.groups.find((g) => g.id === "g-food")?.name).toBe("Comida");
   });
 
   it("lets a name change only its capitalisation", () => {
-    expect(renameCategory(vault, "c-market", "MERCADO").ok).toBe(true);
-    expect(renameGroup(vault, "g-food", "ALIMENTAÇÃO").ok).toBe(true);
+    expect(renameCategory("c-market", "MERCADO")(vault, ctx).ok).toBe(true);
+    expect(renameGroup("g-food", "ALIMENTAÇÃO")(vault, ctx).ok).toBe(true);
   });
 
   it("refuses a rename onto a sibling's name", () => {
-    expect(refusal(renameCategory(vault, "c-market", "restaurante"))).toMatch(/já tem/);
-    expect(refusal(renameGroup(vault, "g-food", "Moradia"))).toMatch(/Já existe/);
+    expect(refusal(renameCategory("c-market", "restaurante")(vault, ctx))).toMatch(/já tem/);
+    expect(refusal(renameGroup("g-food", "Moradia")(vault, ctx))).toMatch(/Já existe/);
   });
 
   it("refuses an empty name and an unknown id", () => {
-    expect(renameCategory(vault, "c-market", " ").ok).toBe(false);
-    expect(renameCategory(vault, "nope", "X").ok).toBe(false);
-    expect(renameGroup(vault, "nope", "X").ok).toBe(false);
+    expect(renameCategory("c-market", " ")(vault, ctx).ok).toBe(false);
+    expect(renameCategory("nope", "X")(vault, ctx).ok).toBe(false);
+    expect(renameGroup("nope", "X")(vault, ctx).ok).toBe(false);
   });
 });
 
 describe("moving a Category", () => {
   it("moves it under another Group of the same kind, keeping its Transactions", () => {
-    const next = changed(moveCategory(vault, "c-market", "g-home")).vault;
+    const next = changed(moveCategory("c-market", "g-home")(vault, ctx)).vault;
     expect(next.categories.find((c) => c.id === "c-market")?.groupId).toBe("g-home");
     expect(categoryUsage(next, "c-market").transactions).toBe(2);
   });
 
   it("refuses to move an expense Category into an income Group", () => {
-    expect(refusal(moveCategory(vault, "c-market", "g-in"))).toMatch(/não se misturam/);
+    expect(refusal(moveCategory("c-market", "g-in")(vault, ctx))).toMatch(/não se misturam/);
   });
 
   it("refuses a move that would put two Categories of one name in a Group", () => {
-    const withTwin = changed(addCategory(vault, { name: "Mercado", groupId: "g-home" }, makeId)).vault;
-    expect(refusal(moveCategory(withTwin, "c-market", "g-home"))).toMatch(/já tem/);
+    const withTwin = changed(addCategory({ name: "Mercado", groupId: "g-home" })(vault, ctx)).vault;
+    expect(refusal(moveCategory("c-market", "g-home")(withTwin, ctx))).toMatch(/já tem/);
   });
 
   it("treats a move to its own Group as no change", () => {
-    const outcome = changed(moveCategory(vault, "c-market", "g-food"));
+    const outcome = changed(moveCategory("c-market", "g-food")(vault, ctx));
     expect(outcome.vault).toBe(vault);
   });
 });
 
 describe("deleting", () => {
   it("deletes a Category nothing uses", () => {
-    const next = changed(deleteCategory(vault, "c-unused")).vault;
+    const next = changed(deleteCategory("c-unused")(vault, ctx)).vault;
     expect(next.categories.some((c) => c.id === "c-unused")).toBe(false);
   });
 
   it("refuses a Category Transactions still use, naming how many", () => {
-    expect(refusal(deleteCategory(vault, "c-market"))).toMatch(/2 transações/);
+    expect(refusal(deleteCategory("c-market")(vault, ctx))).toMatch(/2 transações/);
   });
 
   it("refuses a Category a Budget still uses", () => {
-    expect(refusal(deleteCategory(vault, "c-resto"))).toMatch(/1 orçamento/);
+    expect(refusal(deleteCategory("c-resto")(vault, ctx))).toMatch(/1 orçamento/);
   });
 
   it("never cascades: a refused delete leaves every Transaction as it was", () => {
-    const outcome = deleteCategory(vault, "c-market");
+    const outcome = deleteCategory("c-market")(vault, ctx);
     expect(outcome.ok).toBe(false);
     expect(vault.transactions.filter((t) => t.kind !== "transfer" && t.categoryId === "c-market")).toHaveLength(2);
   });
 
   it("deletes an empty Group and refuses one with Categories in it", () => {
-    expect(changed(deleteGroup(vault, "g-empty")).vault.groups.some((g) => g.id === "g-empty")).toBe(false);
-    expect(refusal(deleteGroup(vault, "g-food"))).toMatch(/2 categorias/);
+    expect(changed(deleteGroup("g-empty")(vault, ctx)).vault.groups.some((g) => g.id === "g-empty")).toBe(false);
+    expect(refusal(deleteGroup("g-food")(vault, ctx))).toMatch(/2 categorias/);
   });
 
   it("refuses unknown ids", () => {
-    expect(deleteCategory(vault, "nope").ok).toBe(false);
-    expect(deleteGroup(vault, "nope").ok).toBe(false);
+    expect(deleteCategory("nope")(vault, ctx).ok).toBe(false);
+    expect(deleteGroup("nope")(vault, ctx).ok).toBe(false);
   });
 });
 

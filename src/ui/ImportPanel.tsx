@@ -3,7 +3,7 @@ import { formatDateBR } from "../domain/dates";
 import { formatBRL } from "../domain/money";
 import { centavos } from "../domain/money";
 import { type ParsedStatement, decodeOfxBytes, parseOfx } from "../domain/ofx";
-import { planImport } from "../domain/statementImport";
+import { commitImport, planImport } from "../domain/statementImport";
 import { useVault } from "../store/useVault";
 
 /** How many past Imports the history shows; the full record stays in imports.json. */
@@ -18,7 +18,7 @@ export function ImportPanel() {
   const accounts = useVault((s) => s.vault.accounts);
   const transactions = useVault((s) => s.vault.transactions);
   const imports = useVault((s) => s.vault.imports);
-  const commitImport = useVault((s) => s.commitImport);
+  const run = useVault((s) => s.run);
 
   const [chosenAccountId, setAccountId] = useState("");
   // With a single Account there is only one possible answer, so it is not asked.
@@ -61,7 +61,11 @@ export function ImportPanel() {
 
   function confirm() {
     if (plan === null) return;
-    const report = commitImport({ plan, fileName });
+    const report = run(commitImport({ plan, fileName }));
+    if (!report.ok) {
+      setError(report.message);
+      return;
+    }
     setResult({
       added: report.added,
       skipped: plan.duplicates.length,
@@ -69,6 +73,7 @@ export function ImportPanel() {
     });
     setStatement(null);
     setFileName("");
+    setError(null);
   }
 
   function cancel() {

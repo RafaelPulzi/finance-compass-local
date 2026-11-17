@@ -160,10 +160,14 @@ vi.mock("../persistence/vaultLocation", () => ({
   },
 }));
 
+/** The store the running test is using, so `afterEach` can drain its save chain. */
+let openStore: Awaited<ReturnType<typeof freshStore>> | null = null;
+
 async function freshStore() {
   vi.resetModules();
   const mod = await import("./useVault");
   mod.resetVaultPersistence();
+  openStore = mod.useVault;
   return mod.useVault;
 }
 
@@ -196,13 +200,19 @@ beforeEach(() => {
 
 afterEach(async () => {
   // Every mutation queues a save, and a test that does not wait for its own
-  // would leave it in flight — landing in the next test, which has already
-  // reset these counters underneath it. Let whatever is suspended finish.
+  // would leave it on the chain — landing in the next test, which has already
+  // reset these counters underneath it. Let whatever is suspended finish, then
+  // drain.
   state.failSaves = null;
   state.stallFirstSaveAfter = null;
   state.releaseStall?.();
   state.releaseRemember?.();
-  await vi.waitFor(() => expect(state.inFlight).toBe(0));
+  // Draining means queueing one more save and awaiting it: the chain is
+  // serial, so everything already on it has run by the time ours does.
+  // Watching `inFlight` instead would not do — it reads 0 while a save sits
+  // queued and has not started, and again in the gap between two of them.
+  await openStore?.getState().retrySave();
+  openStore = null;
 });
 
 describe("init", () => {

@@ -12,6 +12,7 @@ import {
   pendingRuleCount,
   ruleMatchCounts,
   ruleMatches,
+  ruleOfferFor,
   suggestedPattern,
 } from "./classificationRules";
 import type { SessionContext } from "./command";
@@ -231,6 +232,42 @@ describe("suggestedPattern", () => {
 
   it("offers nothing for descriptions with no words at all", () => {
     expect(suggestedPattern([" ", "***"])).toBe(null);
+  });
+});
+
+describe("ruleOfferFor", () => {
+  it("offers the pattern the classified descriptions share, for that Category", () => {
+    expect(ruleOfferFor(base, ["UBER TRIP 8213", "UBER TRIP 9120"], "cat-market")).toEqual({
+      pattern: "uber trip",
+      categoryId: "cat-market",
+    });
+  });
+
+  it("offers nothing when there is no pattern worth proposing", () => {
+    expect(ruleOfferFor(base, ["PADARIA DO ZE", "POSTO IPIRANGA"], "cat-market")).toBeNull();
+  });
+
+  /** Offering what the Vault already says would be the app nagging about its own Rule. */
+  it("offers nothing when a Rule of that kind already says this", () => {
+    const vault = { ...base, rules: [rule({ pattern: "UBER TRIP", categoryId: "cat-market" })] };
+
+    expect(ruleOfferFor(vault, ["UBER TRIP 8213", "UBER TRIP 9120"], "cat-market")).toBeNull();
+  });
+
+  it("still offers it when the existing Rule classifies the other kind", () => {
+    const vault = {
+      ...base,
+      rules: [rule({ pattern: "uber trip", categoryId: "cat-salary", kind: "income" })],
+    };
+
+    expect(ruleOfferFor(vault, ["UBER TRIP 8213", "UBER TRIP 9120"], "cat-market")).toEqual({
+      pattern: "uber trip",
+      categoryId: "cat-market",
+    });
+  });
+
+  it("offers nothing for a Category the Vault does not have", () => {
+    expect(ruleOfferFor(base, ["UBER TRIP 8213"], "cat-nope")).toBeNull();
   });
 });
 

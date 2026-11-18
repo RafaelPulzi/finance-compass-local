@@ -145,19 +145,9 @@ describe("TransactionsPanel list", () => {
     expect(listText()).not.toContain("AÇAÍ");
   });
 
-  it("finds an accented description typed without accents", async () => {
+  it("narrows the list by description, accents and all", async () => {
     show(vault);
     await userEvent.type(screen.getByLabelText("Buscar descrição"), "acai");
-    expect(listText()).toContain("AÇAÍ DA PRAÇA");
-    expect(screen.getByTestId("selection-summary")).toHaveTextContent("1 transação");
-  });
-
-  it("combines filters", async () => {
-    show(vault);
-    await userEvent.selectOptions(screen.getByLabelText("Conta"), "Banco Inter");
-    await userEvent.selectOptions(screen.getByLabelText("Mês"), "2026-10");
-    await userEvent.selectOptions(screen.getByLabelText("Categoria"), "none");
-    expect(screen.getByTestId("selection-summary")).toHaveTextContent("1 transação");
     expect(listText()).toContain("AÇAÍ DA PRAÇA");
   });
 
@@ -222,29 +212,10 @@ describe("TransactionsPanel paging", () => {
     expect(listText()).not.toContain("Compra 59");
   });
 
-  it("counts every match, not just the visible page", () => {
-    show(many);
-    expect(screen.getByTestId("selection-summary")).toHaveTextContent("60 transações");
-  });
-
-  it("goes back to the first page when the filter changes", async () => {
-    show(many);
-    await userEvent.click(screen.getByRole("button", { name: "Próxima" }));
-    await userEvent.type(screen.getByLabelText("Buscar descrição"), "Compra");
-    expect(screen.getByText("Página 1 de 2")).toBeInTheDocument();
-    expect(listText()).toContain("Compra 59");
-  });
-
   it("hides the pager when everything fits on one page", async () => {
     show(many);
     await userEvent.type(screen.getByLabelText("Buscar descrição"), "Compra 1");
     expect(screen.queryByRole("button", { name: "Próxima" })).not.toBeInTheDocument();
-  });
-
-  it("keeps the newest-first order within a page", () => {
-    show(many);
-    const first = within(listItems()[0]).getByText(/Compra/);
-    expect(first).toHaveTextContent("Compra 59");
   });
 });
 
@@ -302,16 +273,6 @@ describe("TransactionsPanel bulk classification", () => {
     expect(categoryOf("e3")).toBeNull();
   });
 
-  it("clears the selection after assigning", async () => {
-    show(vault);
-    await userEvent.click(screen.getByLabelText("Selecionar PADARIA"));
-    await userEvent.selectOptions(
-      screen.getByLabelText("Categoria para as selecionadas"),
-      "cat-market",
-    );
-    expect(screen.queryByLabelText("Categoria para as selecionadas")).not.toBeInTheDocument();
-  });
-
   it("selects every match of the filter, across all pages", async () => {
     show(vault);
     await userEvent.click(
@@ -366,31 +327,6 @@ describe("TransactionsPanel bulk classification", () => {
     expect(categoryOf("e1")).toBeNull();
   });
 
-  it("drops the selection when the filter changes", async () => {
-    show(vault);
-    await userEvent.click(screen.getByLabelText("Selecionar UBER TRIP 1"));
-    expect(screen.getByText("1 selecionada")).toBeInTheDocument();
-
-    await userEvent.type(screen.getByLabelText("Buscar descrição"), "uber");
-    expect(screen.queryByText("1 selecionada")).not.toBeInTheDocument();
-  });
-
-  it("deselects a row that was selected", async () => {
-    show(vault);
-    const box = screen.getByLabelText("Selecionar PADARIA");
-    await userEvent.click(box);
-    await userEvent.click(box);
-    expect(screen.queryByText("1 selecionada")).not.toBeInTheDocument();
-  });
-
-  it("select-all toggles back off", async () => {
-    show(vault);
-    const all = screen.getByLabelText("Selecionar todas as transações do filtro");
-    await userEvent.click(all);
-    expect(screen.getByText("4 selecionadas")).toBeInTheDocument();
-    await userEvent.click(all);
-    expect(screen.queryByText("4 selecionadas")).not.toBeInTheDocument();
-  });
 });
 
 describe("TransactionsPanel editing and deleting", () => {
@@ -555,16 +491,6 @@ describe("TransactionsPanel editing and deleting", () => {
       expect(useVault.getState().vault.transactions).toHaveLength(2);
     });
 
-    it("leaves the Import record alone", async () => {
-      show(vault);
-      await userEvent.click(screen.getByLabelText("Excluir MERCADO"));
-      await userEvent.click(screen.getByRole("button", { name: "Confirmar exclusão" }));
-
-      expect(useVault.getState().vault.imports).toMatchObject([
-        { id: "imp-1", added: 2, skipped: 5 },
-      ]);
-    });
-
     it("cancels without deleting", async () => {
       show(vault);
       await userEvent.click(screen.getByLabelText("Excluir MERCADO"));
@@ -573,31 +499,6 @@ describe("TransactionsPanel editing and deleting", () => {
       expect(txOf("e1")).toBeDefined();
       expect(screen.queryByText(/Excluir .MERCADO./)).not.toBeInTheDocument();
     });
-
-    it("deletes a Transfer too", async () => {
-      show(vault);
-      await userEvent.click(screen.getByLabelText("Excluir PARA POUPANCA"));
-      await userEvent.click(screen.getByRole("button", { name: "Confirmar exclusão" }));
-
-      expect(txOf("t1")).toBeUndefined();
-    });
-  });
-
-  it("opening an edit closes an open delete confirmation", async () => {
-    show(vault);
-    await userEvent.click(screen.getByLabelText("Excluir MERCADO"));
-    await userEvent.click(screen.getByLabelText("Editar SEM CATEGORIA"));
-
-    expect(screen.queryByText(/Excluir .MERCADO./)).not.toBeInTheDocument();
-    expect(screen.getByLabelText("Editar descrição")).toHaveValue("SEM CATEGORIA");
-  });
-
-  it("closes an open form when the filter changes", async () => {
-    show(vault);
-    await userEvent.click(screen.getByLabelText("Editar MERCADO"));
-    await userEvent.type(screen.getByLabelText("Buscar descrição"), "mercado");
-
-    expect(screen.queryByLabelText("Editar descrição")).not.toBeInTheDocument();
   });
 });
 
@@ -610,7 +511,14 @@ describe("a selection the rows in it have left", () => {
     ],
   };
 
-  async function selectBothThenDeleteTheFirst() {
+  /**
+   * The bug the Worklist was extracted to kill, in the form the user met it:
+   * the bar counted a Transaction that had been deleted, and the next bulk
+   * gesture reported the dead id back as skipped. The gesture's own tests live
+   * in `src/worklist`; this is the screen the user was reading.
+   */
+  it("neither counts a deleted row nor carries it into the next gesture", async () => {
+    show(vault);
     const user = userEvent.setup();
     await user.click(screen.getByLabelText("Selecionar APLICACAO CDB 1"));
     await user.click(screen.getByLabelText("Selecionar APLICACAO CDB 2"));
@@ -618,21 +526,7 @@ describe("a selection the rows in it have left", () => {
 
     await user.click(screen.getByLabelText("Excluir APLICACAO CDB 1"));
     await user.click(screen.getByRole("button", { name: "Confirmar exclusão" }));
-    return user;
-  }
-
-  it("counts only the rows still there after one of them is deleted", async () => {
-    show(vault);
-    await selectBothThenDeleteTheFirst();
-
-    // The deleted row cannot be part of a selection any more: a count that
-    // still includes it promises work on a Transaction that no longer exists.
     expect(screen.getByText("1 selecionada")).toBeInTheDocument();
-  });
-
-  it("does not carry a deleted row into the next bulk marking", async () => {
-    show(vault);
-    const user = await selectBothThenDeleteTheFirst();
 
     await user.selectOptions(
       screen.getByLabelText("Outra conta das transferências"),
@@ -1022,19 +916,6 @@ describe("marking a whole selection as Transfers", () => {
     );
   });
 
-  it("clears the selection once the batch has run", async () => {
-    show(vault);
-    const user = await selectBoth();
-    await user.selectOptions(
-      screen.getByLabelText("Outra conta das transferências"),
-      "acc-savings",
-    );
-
-    await user.click(screen.getByRole("button", { name: /Confirmar/ }));
-
-    expect(screen.queryByLabelText("Outra conta das transferências")).not.toBeInTheDocument();
-  });
-
   it("previews only what will convert, leaving out entries already on the Account", async () => {
     show({
       ...vault,
@@ -1145,40 +1026,6 @@ describe("being offered a Rule after classifying by hand", () => {
       { pattern: "uber", categoryId: "cat-market", kind: "expense" },
     ]);
     expect(screen.getByRole("status").textContent).toContain("Regra criada");
-  });
-
-  it("creates nothing when the offer is declined", async () => {
-    const user = await classifyBothUbers();
-
-    await user.click(screen.getByRole("button", { name: "não, obrigado" }));
-
-    expect(rulesOf()).toEqual([]);
-    expect(screen.queryByLabelText("Padrão da regra sugerida")).not.toBeInTheDocument();
-  });
-
-  it("offers nothing when the descriptions have no words in common", async () => {
-    show(vault);
-    const user = userEvent.setup();
-    await user.click(screen.getByLabelText("Selecionar UBER TRIP 8213"));
-    await user.click(screen.getByLabelText("Selecionar PADARIA DO ZE"));
-
-    await user.selectOptions(
-      screen.getByLabelText("Categoria para as selecionadas"),
-      "cat-market",
-    );
-
-    expect(screen.queryByLabelText("Padrão da regra sugerida")).not.toBeInTheDocument();
-  });
-
-  it("offers nothing when a Rule already says this", async () => {
-    await classifyBothUbers({
-      ...vault,
-      rules: [
-        { id: "r-1", pattern: "UBER TRIP", categoryId: "cat-market", kind: "expense" },
-      ],
-    });
-
-    expect(screen.queryByLabelText("Padrão da regra sugerida")).not.toBeInTheDocument();
   });
 });
 

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
+import type { SessionContext } from "./command";
 import { centavos } from "./money";
-import { editedTransaction } from "./transactionEdit";
+import { deleteTransaction, editedTransaction } from "./transactionEdit";
 import type { Vault } from "./types";
 import { emptyVault } from "./types";
 
@@ -308,5 +309,76 @@ describe("the Rule that classified a Transaction, across an edit", () => {
     if (!outcome.ok) return;
     expect(outcome.transaction).toMatchObject({ kind: "income", categoryId: null });
     expect(outcome.transaction).not.toHaveProperty("ruleId");
+  });
+});
+
+describe("deleteTransaction", () => {
+  const ctx: SessionContext = { newId: () => "id-test", now: () => "2026-11-18T00:00:00.000Z" };
+
+  /** The Vault the Command would leave behind, failing the test on a refusal. */
+  function after(vault: Vault, id: string): Vault {
+    const outcome = deleteTransaction(id)(vault, ctx);
+    if (!outcome.ok) throw new Error(`refused: ${outcome.message}`);
+    return outcome.vault;
+  }
+
+  it("removes the Transaction and leaves the rest alone", () => {
+    const next = after(vault, "e1");
+
+    expect(next.transactions.map((tx) => tx.id)).toEqual(["e2", "t1"]);
+  });
+
+  it("deletes a Transfer too, which is a Transaction like any other", () => {
+    expect(after(vault, "t1").transactions.map((tx) => tx.id)).toEqual(["e1", "e2"]);
+  });
+
+  /**
+   * The Import stays an honest history of what it did, so its counts are not
+   * rewritten when a Transaction it added is deleted later.
+   */
+  it("leaves the Import record that added it untouched", () => {
+    const imported: Vault = {
+      ...vault,
+      imports: [
+        {
+          id: "imp-1",
+          accountId: ACC,
+          importedAt: "2026-10-16T00:00:00.000Z",
+          fileName: "extrato.ofx",
+          added: 2,
+          skipped: 5,
+        },
+      ],
+    };
+
+    expect(after(imported, "e1").imports).toEqual(imported.imports);
+  });
+
+  /**
+   * A dismissal names two live Transactions; one naming a deleted Transaction
+   * would sit in the Vault forever matching nothing, since a re-import gives
+   * the entry a new id.
+   */
+  it("takes a dismissed candidate pair that named it along", () => {
+    const dismissed: Vault = {
+      ...vault,
+      dismissedTransferPairs: [
+        { transactionIds: ["e1", "e2"] },
+        { transactionIds: ["e2", "t1"] },
+      ],
+    };
+
+    expect(after(dismissed, "e1").dismissedTransferPairs).toEqual([
+      { transactionIds: ["e2", "t1"] },
+    ]);
+  });
+
+  it("reads an id the Vault does not have as nothing to do, so nothing is saved", () => {
+    const outcome = deleteTransaction("nao-existe")(vault, ctx);
+
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    // The same Vault back is how the store knows there is nothing to write.
+    expect(outcome.vault).toBe(vault);
   });
 });

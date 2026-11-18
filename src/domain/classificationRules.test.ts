@@ -3,6 +3,7 @@ import { categoryUsage, deleteCategory } from "./categories";
 import {
   addRule,
   applyRules,
+  applyRulesToUncategorized,
   classifyAs,
   assignmentsFromRules,
   deleteRule,
@@ -13,9 +14,16 @@ import {
   ruleMatches,
   suggestedPattern,
 } from "./classificationRules";
+import type { SessionContext } from "./command";
 import { centavos } from "./money";
 import type { Rule, Transaction, Vault } from "./types";
 import { emptyVault } from "./types";
+
+const ctx: SessionContext = {
+  newId: () => "id-test",
+  now: () => "2026-11-16T00:00:00.000Z",
+};
+const ctxWith = (newId: () => string): SessionContext => ({ ...ctx, newId });
 
 const INTER = "acc-inter";
 
@@ -233,7 +241,7 @@ describe("adding, editing, reordering and deleting a Rule", () => {
   };
 
   it("takes the kind from the Category, so the two can never disagree", () => {
-    const outcome = addRule(base, { pattern: "ifood", categoryId: "cat-restaurant" }, ids());
+    const outcome = addRule({ pattern: "ifood", categoryId: "cat-restaurant" })(base, ctxWith(ids()));
 
     expect(outcome.ok).toBe(true);
     if (!outcome.ok) return;
@@ -246,7 +254,7 @@ describe("adding, editing, reordering and deleting a Rule", () => {
   });
 
   it("builds an income Rule from an income Category", () => {
-    const outcome = addRule(base, { pattern: "salario", categoryId: "cat-salary" }, ids());
+    const outcome = addRule({ pattern: "salario", categoryId: "cat-salary" })(base, ctxWith(ids()));
 
     expect(outcome.ok).toBe(true);
     if (!outcome.ok) return;
@@ -256,7 +264,7 @@ describe("adding, editing, reordering and deleting a Rule", () => {
   it("adds at the end, where it cannot change what the Rules above decide", () => {
     const vault: Vault = { ...base, rules: [rule()] };
 
-    const outcome = addRule(vault, { pattern: "padaria", categoryId: "cat-market" }, ids());
+    const outcome = addRule({ pattern: "padaria", categoryId: "cat-market" })(vault, ctxWith(ids()));
 
     expect(outcome.ok).toBe(true);
     if (!outcome.ok) return;
@@ -264,14 +272,14 @@ describe("adding, editing, reordering and deleting a Rule", () => {
   });
 
   it("refuses a pattern that would match everything", () => {
-    expect(addRule(base, { pattern: "   ", categoryId: "cat-market" }, ids())).toEqual({
+    expect(addRule({ pattern: "   ", categoryId: "cat-market" })(base, ctxWith(ids()))).toEqual({
       ok: false,
       message: "Informe o texto que a descrição deve conter.",
     });
   });
 
   it("refuses a Category the Vault doesn't have", () => {
-    expect(addRule(base, { pattern: "ifood", categoryId: "cat-nope" }, ids())).toEqual({
+    expect(addRule({ pattern: "ifood", categoryId: "cat-nope" })(base, ctxWith(ids()))).toEqual({
       ok: false,
       message: "Escolha uma categoria existente.",
     });
@@ -280,7 +288,7 @@ describe("adding, editing, reordering and deleting a Rule", () => {
   it("refuses a second Rule with the same pattern for the same kind", () => {
     const vault: Vault = { ...base, rules: [rule({ pattern: "IFOOD" })] };
 
-    expect(addRule(vault, { pattern: "ifood", categoryId: "cat-market" }, ids())).toEqual({
+    expect(addRule({ pattern: "ifood", categoryId: "cat-market" })(vault, ctxWith(ids()))).toEqual({
       ok: false,
       message: "Já existe uma regra com esse padrão.",
     });
@@ -289,7 +297,7 @@ describe("adding, editing, reordering and deleting a Rule", () => {
   it("allows the same pattern for the other kind", () => {
     const vault: Vault = { ...base, rules: [rule({ pattern: "pix" })] };
 
-    const outcome = addRule(vault, { pattern: "pix", categoryId: "cat-salary" }, ids());
+    const outcome = addRule({ pattern: "pix", categoryId: "cat-salary" })(vault, ctxWith(ids()));
 
     expect(outcome.ok).toBe(true);
   });
@@ -300,10 +308,10 @@ describe("adding, editing, reordering and deleting a Rule", () => {
       rules: [rule({ id: "r-a" }), rule({ id: "r-b", pattern: "padaria" })],
     };
 
-    const change = editRule(vault, "r-a", {
+    const change = editRule("r-a", {
       pattern: "ifood com",
       categoryId: "cat-market",
-    });
+    })(vault, ctx);
 
     expect(change.ok).toBe(true);
     if (!change.ok) return;
@@ -317,7 +325,7 @@ describe("adding, editing, reordering and deleting a Rule", () => {
   it("lets a Rule keep its own pattern while its Category changes", () => {
     const vault: Vault = { ...base, rules: [rule()] };
 
-    const change = editRule(vault, "r-1", { pattern: "ifood", categoryId: "cat-market" });
+    const change = editRule("r-1", { pattern: "ifood", categoryId: "cat-market" })(vault, ctx);
 
     expect(change.ok).toBe(true);
   });
@@ -331,7 +339,7 @@ describe("adding, editing, reordering and deleting a Rule", () => {
       ],
     };
 
-    const change = moveRule(vault, "r-specific", -1);
+    const change = moveRule("r-specific", -1)(vault, ctx);
 
     expect(change.ok).toBe(true);
     if (!change.ok) return;
@@ -341,7 +349,7 @@ describe("adding, editing, reordering and deleting a Rule", () => {
   it("treats moving past either end as nothing to do", () => {
     const vault: Vault = { ...base, rules: [rule()] };
 
-    const change = moveRule(vault, "r-1", -1);
+    const change = moveRule("r-1", -1)(vault, ctx);
 
     expect(change.ok).toBe(true);
     if (!change.ok) return;
@@ -355,7 +363,7 @@ describe("adding, editing, reordering and deleting a Rule", () => {
       transactions: [tx({ categoryId: "cat-restaurant", ruleId: "r-1" })],
     };
 
-    const change = deleteRule(vault, "r-1");
+    const change = deleteRule("r-1")(vault, ctx);
 
     expect(change.ok).toBe(true);
     if (!change.ok) return;
@@ -368,12 +376,79 @@ describe("adding, editing, reordering and deleting a Rule", () => {
 
   it("refuses to edit, move or delete a Rule that isn't there", () => {
     const message = "Regra não encontrada.";
-    expect(editRule(base, "r-nope", { pattern: "x", categoryId: "cat-market" })).toEqual({
+    expect(editRule("r-nope", { pattern: "x", categoryId: "cat-market" })(base, ctx)).toEqual({
       ok: false,
       message,
     });
-    expect(moveRule(base, "r-nope", 1)).toEqual({ ok: false, message });
-    expect(deleteRule(base, "r-nope")).toEqual({ ok: false, message });
+    expect(moveRule("r-nope", 1)(base, ctx)).toEqual({ ok: false, message });
+    expect(deleteRule("r-nope")(base, ctx)).toEqual({ ok: false, message });
+  });
+});
+
+describe("applyRulesToUncategorized, as a Command", () => {
+  it("reports how many it classified, and stamps each with the Rule that did it", () => {
+    const vault: Vault = {
+      ...base,
+      rules: [rule()],
+      transactions: [
+        tx({ id: "a" }),
+        tx({ id: "b" }),
+        tx({ id: "c", description: "PADARIA" }),
+      ],
+    };
+
+    const outcome = applyRulesToUncategorized()(vault, ctx);
+    if (!outcome.ok) throw new Error(outcome.message);
+
+    expect(outcome.applied).toBe(2);
+    expect(outcome.applied).toBe(pendingRuleCount(vault));
+    const classified = outcome.vault.transactions.filter(
+      (t) => t.kind !== "transfer" && t.categoryId === "cat-restaurant",
+    );
+    expect(classified).toHaveLength(2);
+    expect(classified.every((t) => t.kind !== "transfer" && t.ruleId === "r-1")).toBe(true);
+    // What matched nothing stays Uncategorized rather than being swept anywhere.
+    const untouched = outcome.vault.transactions.find((t) => t.id === "c");
+    expect(untouched?.kind !== "transfer" && untouched?.categoryId).toBeNull();
+  });
+
+  it("gives the same Vault back when nothing matches, which is what the store reads as no save", () => {
+    const vault: Vault = {
+      ...base,
+      rules: [rule()],
+      transactions: [tx({ description: "PADARIA" })],
+    };
+
+    const outcome = applyRulesToUncategorized()(vault, ctx);
+    if (!outcome.ok) throw new Error(outcome.message);
+    expect(outcome.applied).toBe(0);
+    expect(outcome.vault).toBe(vault);
+  });
+
+  it("has nothing left to do on a second pass", () => {
+    const vault: Vault = { ...base, rules: [rule()], transactions: [tx()] };
+
+    const first = applyRulesToUncategorized()(vault, ctx);
+    if (!first.ok) throw new Error(first.message);
+    const second = applyRulesToUncategorized()(first.vault, ctx);
+    if (!second.ok) throw new Error(second.message);
+
+    expect(first.applied).toBe(1);
+    expect(second.applied).toBe(0);
+    expect(second.vault).toBe(first.vault);
+  });
+
+  it("never overrules a Category the user set by hand", () => {
+    const vault: Vault = {
+      ...base,
+      rules: [rule()],
+      transactions: [tx({ categoryId: "cat-market" })],
+    };
+
+    const outcome = applyRulesToUncategorized()(vault, ctx);
+    if (!outcome.ok) throw new Error(outcome.message);
+    expect(outcome.applied).toBe(0);
+    expect(outcome.vault).toBe(vault);
   });
 });
 
@@ -408,7 +483,7 @@ describe("review fixes", () => {
       rules: [rule()],
       transactions: [tx({ categoryId: "cat-restaurant", ruleId: "r-1" })],
     };
-    const outcome = classifyAs(vault, ["tx-1"], "cat-restaurant");
+    const outcome = classifyAs(["tx-1"], "cat-restaurant")(vault, ctx);
     if (!outcome.ok) throw new Error(outcome.message);
     expect(outcome.changed).toBe(1);
     const next = outcome.vault.transactions[0];
@@ -421,7 +496,7 @@ describe("review fixes", () => {
     // producing rows in no total and no backlog. Refused, never cascaded.
     const vault = { ...base, rules: [rule()] };
     expect(categoryUsage(vault, "cat-restaurant").rules).toBe(1);
-    const outcome = deleteCategory(vault, "cat-restaurant");
+    const outcome = deleteCategory("cat-restaurant")(vault, ctx);
     expect(outcome.ok).toBe(false);
     if (!outcome.ok) expect(outcome.message).toContain("1 regra");
   });

@@ -1,13 +1,13 @@
 import { type FormEvent, useState } from "react";
 import { formatBRL } from "../domain/money";
 import type { Account, ExpenseTransaction, IncomeTransaction } from "../domain/types";
-import type { TransactionEditResult } from "../store/useVault";
+import type { ActionResult } from "../domain/command";
 
 interface Props {
   transaction: IncomeTransaction | ExpenseTransaction;
   accounts: readonly Account[];
   /** Returns the store's verdict: a refused marking is reported, not swallowed. */
-  onMark: (otherAccountId: string) => TransactionEditResult;
+  onMark: (otherAccountId: string) => ActionResult;
   onCancel: () => void;
 }
 

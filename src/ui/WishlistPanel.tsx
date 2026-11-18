@@ -4,6 +4,10 @@ import type { Wish } from "../domain/types";
 import { isOpenWish } from "../domain/types";
 import {
   THIRTY_DAY_THRESHOLD,
+  addWish,
+  buyWish,
+  deleteWish,
+  dropWish,
   isWaitOver,
   waitRuleFor,
   wishDeadline,
@@ -33,10 +37,7 @@ function remainingLabel(ms: number): string {
 
 export function WishlistPanel() {
   const vault = useVault((s) => s.vault);
-  const addWish = useVault((s) => s.addWish);
-  const buyWish = useVault((s) => s.buyWish);
-  const dropWish = useVault((s) => s.dropWish);
-  const deleteWish = useVault((s) => s.deleteWish);
+  const run = useVault((s) => s.run);
 
   const [name, setName] = useState("");
   const [priceDraft, setPriceDraft] = useState("");
@@ -78,7 +79,7 @@ export function WishlistPanel() {
     e.preventDefault();
     let result;
     try {
-      result = addWish({ name, price: parseBRL(priceDraft) });
+      result = run(addWish({ name, price: parseBRL(priceDraft) }));
     } catch {
       setError("Preço inválido. Use o formato 199,90.");
       return;
@@ -92,8 +93,8 @@ export function WishlistPanel() {
     setError(null);
   }
 
-  function act(action: (id: string) => { ok: true } | { ok: false; message: string }, id: string) {
-    const result = action(id);
+  function act(command: ReturnType<typeof buyWish>) {
+    const result = run(command);
     setError(result.ok ? null : result.message);
   }
 
@@ -162,8 +163,8 @@ export function WishlistPanel() {
                 key={wish.id}
                 wish={wish}
                 now={now}
-                onBuy={() => act(buyWish, wish.id)}
-                onDrop={() => act(dropWish, wish.id)}
+                onBuy={() => act(buyWish(wish.id))}
+                onDrop={() => act(dropWish(wish.id))}
               />
             ))}
           </ul>
@@ -207,7 +208,7 @@ export function WishlistPanel() {
                   </span>
                   <button
                     type="button"
-                    onClick={() => act(deleteWish, wish.id)}
+                    onClick={() => act(deleteWish(wish.id))}
                     className="text-xs text-slate-400 hover:text-red-600"
                   >
                     Remover

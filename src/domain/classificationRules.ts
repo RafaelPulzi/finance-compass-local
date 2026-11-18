@@ -1,6 +1,5 @@
 import { categoryKind } from "./categories";
-import type { VaultChange } from "./categories";
-import type { CommandOutcome } from "./command";
+import type { VaultCommand } from "./command";
 import { normalizeForSearch } from "./text";
 import type { CategoryKind, Id, Rule, Transaction, Vault } from "./types";
 
@@ -14,8 +13,9 @@ import type { CategoryKind, Id, Rule, Transaction, Vault } from "./types";
  * (ADR-0008).
  *
  * Everything here is pure: it decides which Transaction would get which
- * Category, and counts what it would do. The store applies the result in one
- * mutation; the Import path calls the same function on its own additions.
+ * Category, and counts what it would do. The Command carries the whole Vault
+ * back, so it lands in one mutation; the Import path calls the same function
+ * on its own additions.
  */
 
 /** What a Rule would do to one Transaction. */
@@ -152,13 +152,15 @@ export function pendingRuleCount(vault: Vault): number {
  * When no Rule matches anything the same Vault comes back, which the store
  * reads as nothing to save.
  */
-export function applyRulesToUncategorized(vault: Vault): CommandOutcome<{ applied: number }> {
-  const { transactions, assignments } = applyRules(vault.rules, vault.transactions);
-  if (assignments.length === 0) return { ok: true, vault, applied: 0 };
-  return {
-    ok: true,
-    vault: { ...vault, transactions: [...transactions] },
-    applied: assignments.length,
+export function applyRulesToUncategorized(): VaultCommand<{ applied: number }> {
+  return (vault) => {
+    const { transactions, assignments } = applyRules(vault.rules, vault.transactions);
+    if (assignments.length === 0) return { ok: true, vault, applied: 0 };
+    return {
+      ok: true,
+      vault: { ...vault, transactions: [...transactions] },
+      applied: assignments.length,
+    };
   };
 }
 
@@ -173,32 +175,33 @@ export function applyRulesToUncategorized(vault: Vault): CommandOutcome<{ applie
  * being the explanation for it (ADR-0008): the `ruleId` is dropped.
  */
 export function classifyAs(
-  vault: Vault,
   transactionIds: readonly Id[],
   categoryId: Id,
-): CommandOutcome<{ changed: number }> {
-  // No ids means no change, and an empty save would still rewrite every file.
-  if (transactionIds.length === 0) return { ok: true, vault, changed: 0 };
-  const kind = categoryKind(vault, categoryId);
-  // A Category the vault doesn't have would orphan every Transaction it touched.
-  if (kind === undefined) {
-    return { ok: false, message: "Escolha uma categoria existente." };
-  }
-  const wanted = new Set(transactionIds);
-  let changed = 0;
-  const transactions = vault.transactions.map((tx) => {
-    if (!wanted.has(tx.id) || tx.kind !== kind) return tx;
-    // Re-choosing the Category a Rule had assigned is still the user speaking:
-    // the Category stays, but the Rule stops being the explanation for it —
-    // only a row with nothing to change at all is left untouched.
-    if (tx.categoryId === categoryId && tx.ruleId === undefined) return tx;
-    changed += 1;
-    const next = { ...tx, categoryId };
-    delete next.ruleId;
-    return next;
-  });
-  if (changed === 0) return { ok: true, vault, changed };
-  return { ok: true, vault: { ...vault, transactions }, changed };
+): VaultCommand<{ changed: number }> {
+  return (vault) => {
+    // No ids means no change, and an empty save would still rewrite every file.
+    if (transactionIds.length === 0) return { ok: true, vault, changed: 0 };
+    const kind = categoryKind(vault, categoryId);
+    // A Category the vault doesn't have would orphan every Transaction it touched.
+    if (kind === undefined) {
+      return { ok: false, message: "Escolha uma categoria existente." };
+    }
+    const wanted = new Set(transactionIds);
+    let changed = 0;
+    const transactions = vault.transactions.map((tx) => {
+      if (!wanted.has(tx.id) || tx.kind !== kind) return tx;
+      // Re-choosing the Category a Rule had assigned is still the user speaking:
+      // the Category stays, but the Rule stops being the explanation for it —
+      // only a row with nothing to change at all is left untouched.
+      if (tx.categoryId === categoryId && tx.ruleId === undefined) return tx;
+      changed += 1;
+      const next = { ...tx, categoryId };
+      delete next.ruleId;
+      return next;
+    });
+    if (changed === 0) return { ok: true, vault, changed };
+    return { ok: true, vault: { ...vault, transactions }, changed };
+  };
 }
 
 // --- Suggesting a Rule from work the user just did -------------------------
@@ -300,46 +303,46 @@ export function ruleOfferFor(
  * implied — an expense Category can only classify Expenses — and a field the
  * user can set independently is a field that can contradict itself.
  */
-export function addRule(
-  vault: Vault,
-  input: RuleInput,
-  newId: () => Id,
-): { ok: true; vault: Vault; rule: Rule } | { ok: false; message: string } {
-  const prepared = prepare(vault, input, null);
-  if (!prepared.ok) return prepared;
+export function addRule(input: RuleInput): VaultCommand<{ rule: Rule }> {
+  return (vault, ctx) => {
+    const prepared = prepare(vault, input, null);
+    if (!prepared.ok) return prepared;
 
-  const rule: Rule = {
-    id: newId(),
-    pattern: prepared.pattern,
-    categoryId: input.categoryId,
-    kind: prepared.kind,
+    const rule: Rule = {
+      id: ctx.newId(),
+      pattern: prepared.pattern,
+      categoryId: input.categoryId,
+      kind: prepared.kind,
+    };
+    return { ok: true, vault: { ...vault, rules: [...vault.rules, rule] }, rule };
   };
-  return { ok: true, vault: { ...vault, rules: [...vault.rules, rule] }, rule };
 }
 
 /** Change a Rule's pattern or Category, keeping its place in the order. */
-export function editRule(vault: Vault, ruleId: Id, input: RuleInput): VaultChange {
-  const existing = vault.rules.find((r) => r.id === ruleId);
-  if (existing === undefined) return { ok: false, message: "Regra não encontrada." };
+export function editRule(ruleId: Id, input: RuleInput): VaultCommand {
+  return (vault) => {
+    const existing = vault.rules.find((r) => r.id === ruleId);
+    if (existing === undefined) return { ok: false, message: "Regra não encontrada." };
 
-  const prepared = prepare(vault, input, ruleId);
-  if (!prepared.ok) return prepared;
+    const prepared = prepare(vault, input, ruleId);
+    if (!prepared.ok) return prepared;
 
-  return {
-    ok: true,
-    vault: {
-      ...vault,
-      rules: vault.rules.map((rule) =>
-        rule.id === ruleId
-          ? {
-              ...rule,
-              pattern: prepared.pattern,
-              categoryId: input.categoryId,
-              kind: prepared.kind,
-            }
-          : rule,
-      ),
-    },
+    return {
+      ok: true,
+      vault: {
+        ...vault,
+        rules: vault.rules.map((rule) =>
+          rule.id === ruleId
+            ? {
+                ...rule,
+                pattern: prepared.pattern,
+                categoryId: input.categoryId,
+                kind: prepared.kind,
+              }
+            : rule,
+        ),
+      },
+    };
   };
 }
 
@@ -349,11 +352,13 @@ export function editRule(vault: Vault, ruleId: Id, input: RuleInput): VaultChang
  * happens next, not a way to lose a year of classification. A `ruleId` pointing
  * at a Rule that no longer exists reads as exactly that.
  */
-export function deleteRule(vault: Vault, ruleId: Id): VaultChange {
-  if (!vault.rules.some((r) => r.id === ruleId)) {
-    return { ok: false, message: "Regra não encontrada." };
-  }
-  return { ok: true, vault: { ...vault, rules: vault.rules.filter((r) => r.id !== ruleId) } };
+export function deleteRule(ruleId: Id): VaultCommand {
+  return (vault) => {
+    if (!vault.rules.some((r) => r.id === ruleId)) {
+      return { ok: false, message: "Regra não encontrada." };
+    }
+    return { ok: true, vault: { ...vault, rules: vault.rules.filter((r) => r.id !== ruleId) } };
+  };
 }
 
 /**
@@ -361,17 +366,19 @@ export function deleteRule(vault: Vault, ruleId: Id): VaultChange {
  * win over a general one. Moving past either end is not an error, it is simply
  * nothing to do.
  */
-export function moveRule(vault: Vault, ruleId: Id, offset: -1 | 1): VaultChange {
-  const from = vault.rules.findIndex((r) => r.id === ruleId);
-  if (from === -1) return { ok: false, message: "Regra não encontrada." };
+export function moveRule(ruleId: Id, offset: -1 | 1): VaultCommand {
+  return (vault) => {
+    const from = vault.rules.findIndex((r) => r.id === ruleId);
+    if (from === -1) return { ok: false, message: "Regra não encontrada." };
 
-  const to = from + offset;
-  if (to < 0 || to >= vault.rules.length) return { ok: true, vault };
+    const to = from + offset;
+    if (to < 0 || to >= vault.rules.length) return { ok: true, vault };
 
-  const rules = [...vault.rules];
-  const [moved] = rules.splice(from, 1);
-  rules.splice(to, 0, moved);
-  return { ok: true, vault: { ...vault, rules } };
+    const rules = [...vault.rules];
+    const [moved] = rules.splice(from, 1);
+    rules.splice(to, 0, moved);
+    return { ok: true, vault: { ...vault, rules } };
+  };
 }
 
 /**

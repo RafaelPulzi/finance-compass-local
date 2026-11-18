@@ -1,5 +1,5 @@
 import { categoryKind } from "./categories";
-import type { CommandOutcome } from "./command";
+import type { VaultCommand } from "./command";
 import type { Centavos } from "./money";
 import {
   badAmount,
@@ -14,8 +14,9 @@ import type { Id, ISODate, Transaction, Vault } from "./types";
 /**
  * Correcting a Transaction that is already recorded.
  *
- * Pure: it decides what the Transaction should become, or why the change can't
- * be made. The store splices the result in; nothing here writes.
+ * Pure: `editedTransaction` decides what the Transaction should become, or why
+ * the change can't be made, and the Command around it splices that into the
+ * Vault it returns. Nothing here writes; only `run` does.
  *
  * Every rule the model relies on is enforced here rather than in the form, so
  * the UI and the store cannot disagree about what a valid Transaction is.
@@ -47,21 +48,19 @@ export type EditOutcome =
 // and recovery paths, so the three cannot drift apart again.
 
 /** The Vault with the Transaction corrected in place, or why it can't be. */
-export function editTransaction(
-  vault: Vault,
-  transactionId: Id,
-  changes: TransactionEdit,
-): CommandOutcome {
-  const outcome = editedTransaction(vault, transactionId, changes);
-  if (!outcome.ok) return outcome;
-  return {
-    ok: true,
-    vault: {
-      ...vault,
-      transactions: vault.transactions.map((tx) =>
-        tx.id === transactionId ? outcome.transaction : tx,
-      ),
-    },
+export function editTransaction(transactionId: Id, changes: TransactionEdit): VaultCommand {
+  return (vault) => {
+    const outcome = editedTransaction(vault, transactionId, changes);
+    if (!outcome.ok) return outcome;
+    return {
+      ok: true,
+      vault: {
+        ...vault,
+        transactions: vault.transactions.map((tx) =>
+          tx.id === transactionId ? outcome.transaction : tx,
+        ),
+      },
+    };
   };
 }
 
@@ -72,22 +71,24 @@ export function editTransaction(
  * The `fitid` goes with the Transaction, so re-importing the same Statement
  * will add it back.
  */
-export function deleteTransaction(vault: Vault, transactionId: Id): CommandOutcome {
-  if (!vault.transactions.some((tx) => tx.id === transactionId)) {
-    return { ok: true, vault };
-  }
-  return {
-    ok: true,
-    vault: {
-      ...vault,
-      transactions: vault.transactions.filter((tx) => tx.id !== transactionId),
-      // A dismissal names two live Transactions; one that names this one would
-      // sit in the vault files forever, matching nothing — a re-import gives
-      // the entry a new id — so it goes with the Transaction it described.
-      dismissedTransferPairs: vault.dismissedTransferPairs.filter(
-        (pair) => !pair.transactionIds.includes(transactionId),
-      ),
-    },
+export function deleteTransaction(transactionId: Id): VaultCommand {
+  return (vault) => {
+    if (!vault.transactions.some((tx) => tx.id === transactionId)) {
+      return { ok: true, vault };
+    }
+    return {
+      ok: true,
+      vault: {
+        ...vault,
+        transactions: vault.transactions.filter((tx) => tx.id !== transactionId),
+        // A dismissal names two live Transactions; one that names this one would
+        // sit in the vault files forever, matching nothing — a re-import gives
+        // the entry a new id — so it goes with the Transaction it described.
+        dismissedTransferPairs: vault.dismissedTransferPairs.filter(
+          (pair) => !pair.transactionIds.includes(transactionId),
+        ),
+      },
+    };
   };
 }
 

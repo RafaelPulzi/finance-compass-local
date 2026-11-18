@@ -1,7 +1,18 @@
 import { type FormEvent, useMemo, useState } from "react";
-import { categoryTree, transactionCountByCategory } from "../domain/categories";
+import {
+  addCategory,
+  addGroup,
+  categoryTree,
+  deleteCategory,
+  deleteGroup,
+  moveCategory,
+  renameCategory,
+  renameGroup,
+  transactionCountByCategory,
+} from "../domain/categories";
+import type { ActionResult } from "../domain/command";
 import type { CategoryKind, Id } from "../domain/types";
-import { type ActionResult, useVault } from "../store/useVault";
+import { useVault } from "../store/useVault";
 
 type Renaming = { target: "group" | "category"; id: Id; draft: string } | null;
 
@@ -23,13 +34,7 @@ const linkClass = "text-xs text-slate-500 underline hover:text-slate-700 dark:ho
  */
 export function CategoriesPanel() {
   const vault = useVault((s) => s.vault);
-  const addGroup = useVault((s) => s.addGroup);
-  const addCategory = useVault((s) => s.addCategory);
-  const renameGroup = useVault((s) => s.renameGroup);
-  const renameCategory = useVault((s) => s.renameCategory);
-  const moveCategory = useVault((s) => s.moveCategory);
-  const deleteCategory = useVault((s) => s.deleteCategory);
-  const deleteGroup = useVault((s) => s.deleteGroup);
+  const run = useVault((s) => s.run);
 
   const trees = useMemo(
     () => ({ expense: categoryTree(vault, "expense"), income: categoryTree(vault, "income") }),
@@ -58,22 +63,23 @@ export function CategoriesPanel() {
   function submitRename(e: FormEvent) {
     e.preventDefault();
     if (renaming === null) return;
-    const result =
+    const result = run(
       renaming.target === "group"
         ? renameGroup(renaming.id, renaming.draft)
-        : renameCategory(renaming.id, renaming.draft);
+        : renameCategory(renaming.id, renaming.draft),
+    );
     if (report(result)) setRenaming(null);
   }
 
   function submitCategory(e: FormEvent, groupId: Id) {
     e.preventDefault();
-    const result = addCategory({ name: newCategory[groupId] ?? "", groupId });
+    const result = run(addCategory({ name: newCategory[groupId] ?? "", groupId }));
     if (report(result)) setNewCategory((d) => ({ ...d, [groupId]: "" }));
   }
 
   function submitGroup(e: FormEvent, kind: CategoryKind) {
     e.preventDefault();
-    const result = addGroup({ name: newGroup[kind], kind });
+    const result = run(addGroup({ name: newGroup[kind], kind }));
     if (report(result)) setNewGroup((d) => ({ ...d, [kind]: "" }));
   }
 
@@ -161,7 +167,7 @@ export function CategoriesPanel() {
                             className={linkClass}
                             aria-label={`Excluir grupo ${group.name}`}
                             onClick={() =>
-                              report(deleteGroup(group.id), `Grupo “${group.name}” excluído.`)
+                              report(run(deleteGroup(group.id)), `Grupo “${group.name}” excluído.`)
                             }
                           >
                             excluir
@@ -210,7 +216,7 @@ export function CategoriesPanel() {
                                     onChange={(e) =>
                                       e.target.value &&
                                       report(
-                                        moveCategory(category.id, e.target.value),
+                                        run(moveCategory(category.id, e.target.value)),
                                         `“${category.name}” movida.`,
                                       )
                                     }
@@ -229,7 +235,7 @@ export function CategoriesPanel() {
                                   aria-label={`Excluir categoria ${category.name}`}
                                   onClick={() =>
                                     report(
-                                      deleteCategory(category.id),
+                                      run(deleteCategory(category.id)),
                                       `Categoria “${category.name}” excluída.`,
                                     )
                                   }

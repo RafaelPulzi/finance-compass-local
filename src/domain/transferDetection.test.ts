@@ -13,6 +13,8 @@ import { emptyVault } from "./types";
 
 const CHECKING = "acc-checking";
 const SAVINGS = "acc-savings";
+
+const ctx = { newId: () => "tr-new", now: () => "2026-11-16T00:00:00.000Z" };
 const CARD = "acc-card";
 
 const expense = (
@@ -301,7 +303,6 @@ describe("findTransferCandidates", () => {
 });
 
 describe("acceptTransferPair", () => {
-  const newId = () => "tr-new";
 
   it("replaces the two entries with one Transfer, remembering both bank ids", () => {
     const vault = vaultOf([
@@ -310,7 +311,7 @@ describe("acceptTransferPair", () => {
       expense("e-other", "2026-10-01", 123),
     ]);
 
-    const outcome = acceptTransferPair(vault, "e1", "i1", newId);
+    const outcome = acceptTransferPair("e1", "i1")(vault, ctx);
     if (!outcome.ok) throw new Error(outcome.message);
     expect(outcome.vault.transactions.map((tx) => tx.id)).toEqual(["e-other", "tr-new"]);
     expect(outcome.vault.transactions[1]).toMatchObject({
@@ -333,7 +334,7 @@ describe("acceptTransferPair", () => {
       expense("e1", "2026-10-07", 50000),
       income("i1", "2026-10-07", 50000),
     ]);
-    const outcome = acceptTransferPair(vault, "e1", "i1", newId);
+    const outcome = acceptTransferPair("e1", "i1")(vault, ctx);
     if (!outcome.ok) throw new Error(outcome.message);
     expect(outcome.vault.transactions[0]).not.toHaveProperty("recoveredFrom");
   });
@@ -347,7 +348,7 @@ describe("acceptTransferPair", () => {
       ],
       [{ transactionIds: ["e1", "i2"] }],
     );
-    const outcome = acceptTransferPair(vault, "e1", "i1", newId);
+    const outcome = acceptTransferPair("e1", "i1")(vault, ctx);
     if (!outcome.ok) throw new Error(outcome.message);
     expect(outcome.vault.dismissedTransferPairs).toEqual([]);
   });
@@ -357,7 +358,7 @@ describe("acceptTransferPair", () => {
       expense("e1", "2026-10-07", 50000),
       expense("e2", "2026-10-07", 50000, SAVINGS),
     ]);
-    expect(acceptTransferPair(vault, "e1", "e2", newId).ok).toBe(false);
+    expect(acceptTransferPair("e1", "e2")(vault, ctx).ok).toBe(false);
   });
 
   it("refuses a same-account or unequal-amount pair, and a missing Transaction", () => {
@@ -365,15 +366,15 @@ describe("acceptTransferPair", () => {
       expense("e1", "2026-10-07", 50000),
       income("i1", "2026-10-07", 50000, CHECKING),
     ]);
-    expect(acceptTransferPair(sameAccount, "e1", "i1", newId).ok).toBe(false);
+    expect(acceptTransferPair("e1", "i1")(sameAccount, ctx).ok).toBe(false);
 
     const unequal = vaultOf([
       expense("e1", "2026-10-07", 50000),
       income("i1", "2026-10-07", 49900),
     ]);
-    expect(acceptTransferPair(unequal, "e1", "i1", newId).ok).toBe(false);
+    expect(acceptTransferPair("e1", "i1")(unequal, ctx).ok).toBe(false);
 
-    expect(acceptTransferPair(unequal, "e1", "ghost", newId).ok).toBe(false);
+    expect(acceptTransferPair("e1", "ghost")(unequal, ctx).ok).toBe(false);
   });
 
   it("a re-import of either Statement skips the converted entries", () => {
@@ -381,7 +382,7 @@ describe("acceptTransferPair", () => {
       { ...expense("e1", "2026-10-07", 50000), fitid: "f-e1" } as Transaction,
       { ...income("i1", "2026-10-08", 50000), fitid: "f-i1" } as Transaction,
     ]);
-    const outcome = acceptTransferPair(vault, "e1", "i1", newId);
+    const outcome = acceptTransferPair("e1", "i1")(vault, ctx);
     if (!outcome.ok) throw new Error(outcome.message);
 
     const plan = planImport(
@@ -402,7 +403,7 @@ describe("dismissTransferPair", () => {
     ]);
     expect(pairs(vault)).toEqual(["e1/i1"]);
 
-    const outcome = dismissTransferPair(vault, "e1", "i1");
+    const outcome = dismissTransferPair("e1", "i1")(vault, ctx);
     if (!outcome.ok) throw new Error(outcome.message);
     expect(outcome.vault.transactions).toBe(vault.transactions);
     expect(pairs(outcome.vault)).toEqual([]);
@@ -413,14 +414,14 @@ describe("dismissTransferPair", () => {
       [expense("e1", "2026-10-07", 50000), income("i1", "2026-10-07", 50000)],
       [{ transactionIds: ["i1", "e1"] }],
     );
-    const outcome = dismissTransferPair(vault, "e1", "i1");
+    const outcome = dismissTransferPair("e1", "i1")(vault, ctx);
     expect(outcome.ok && outcome.vault).toBe(vault);
   });
 
   it("refuses a pair of one Transaction, or one that does not exist", () => {
     const vault = vaultOf([expense("e1", "2026-10-07", 50000)]);
-    expect(dismissTransferPair(vault, "e1", "e1").ok).toBe(false);
-    expect(dismissTransferPair(vault, "e1", "ghost").ok).toBe(false);
+    expect(dismissTransferPair("e1", "e1")(vault, ctx).ok).toBe(false);
+    expect(dismissTransferPair("e1", "ghost")(vault, ctx).ok).toBe(false);
   });
 });
 
@@ -430,7 +431,7 @@ describe("deleting a Transaction named by a dismissal", () => {
       [expense("e1", "2026-10-07", 50000), income("i1", "2026-10-07", 50000)],
       [{ transactionIds: ["e1", "i1"] }],
     );
-    const outcome = deleteTransaction(vault, "e1");
+    const outcome = deleteTransaction("e1")(vault, ctx);
     if (!outcome.ok) throw new Error(outcome.message);
     expect(outcome.vault.transactions.map((tx) => tx.id)).toEqual(["i1"]);
     expect(outcome.vault.dismissedTransferPairs).toEqual([]);

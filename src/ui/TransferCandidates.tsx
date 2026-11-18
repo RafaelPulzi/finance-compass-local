@@ -1,7 +1,11 @@
 import { useMemo, useState } from "react";
 import { formatDateBR } from "../domain/dates";
 import { formatBRL } from "../domain/money";
-import { findTransferCandidates } from "../domain/transferDetection";
+import {
+  acceptTransferPair,
+  dismissTransferPair,
+  findTransferCandidates,
+} from "../domain/transferDetection";
 import { useVault } from "../store/useVault";
 
 /** How many pairs show at once; a vault of PIX moves can hold dozens. */
@@ -14,8 +18,7 @@ const VISIBLE = 8;
  */
 export function TransferCandidates() {
   const vault = useVault((s) => s.vault);
-  const acceptTransferPair = useVault((s) => s.acceptTransferPair);
-  const dismissTransferPair = useVault((s) => s.dismissTransferPair);
+  const run = useVault((s) => s.run);
   const [error, setError] = useState<string | null>(null);
   const [showAll, setShowAll] = useState(false);
 
@@ -28,7 +31,8 @@ export function TransferCandidates() {
   if (candidates.length === 0) return null;
   const visible = showAll ? candidates : candidates.slice(0, VISIBLE);
 
-  function decide(result: { ok: true } | { ok: false; message: string }) {
+  function decide(command: ReturnType<typeof acceptTransferPair>) {
+    const result = run(command);
     setError(result.ok ? null : result.message);
   }
 

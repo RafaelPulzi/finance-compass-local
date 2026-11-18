@@ -1,4 +1,4 @@
-import type { CommandOutcome } from "./command";
+import type { VaultCommand } from "./command";
 import { missingAccount } from "./transactionValidation";
 import type { Id, Transaction, TransferTransaction, Vault } from "./types";
 
@@ -10,8 +10,9 @@ import type { Id, Transaction, TransferTransaction, Vault } from "./types";
  * is ever imported. No pair detector can see that as a Transfer (ADR-0006), so
  * the user names the other side themselves and this turns the entry into one.
  *
- * Pure: it decides what the entry becomes, or why it can't. The store splices
- * the result in; nothing here writes.
+ * Pure: `transferFromEntry` decides what the entry becomes, or why it can't,
+ * and the Command around it splices that into the Vault it returns. Nothing
+ * here writes; only `run` does.
  *
  * The conversion **replaces** rather than adds. Keeping the entry and adding a
  * Transfer beside it would count the same money twice — once as an Expense and
@@ -221,14 +222,12 @@ function spliced(vault: Vault, transaction: Transaction): Vault {
 }
 
 /** The Vault with one imported entry marked as a Transfer. */
-export function markAsTransfer(
-  vault: Vault,
-  transactionId: Id,
-  otherAccountId: Id,
-): CommandOutcome {
-  const outcome = transferFromEntry(vault, transactionId, otherAccountId);
-  if (!outcome.ok) return outcome;
-  return { ok: true, vault: spliced(vault, outcome.transaction) };
+export function markAsTransfer(transactionId: Id, otherAccountId: Id): VaultCommand {
+  return (vault) => {
+    const outcome = transferFromEntry(vault, transactionId, otherAccountId);
+    if (!outcome.ok) return outcome;
+    return { ok: true, vault: spliced(vault, outcome.transaction) };
+  };
 }
 
 /**
@@ -238,24 +237,25 @@ export function markAsTransfer(
  * still `ok`: the skips, not a refusal, are the report.
  */
 export function markAllAsTransfers(
-  vault: Vault,
   transactionIds: readonly Id[],
   otherAccountId: Id,
-): CommandOutcome<{ converted: number; skipped: readonly SkippedEntry[] }> {
-  const outcome = transfersFromEntries(vault, transactionIds, otherAccountId);
-  if (!outcome.ok) return outcome;
-  if (outcome.transfers.length === 0) {
-    return { ok: true, vault, converted: 0, skipped: outcome.skipped };
-  }
-  const byId = new Map(outcome.transfers.map((tx) => [tx.id, tx]));
-  return {
-    ok: true,
-    vault: {
-      ...vault,
-      transactions: vault.transactions.map((tx) => byId.get(tx.id) ?? tx),
-    },
-    converted: outcome.transfers.length,
-    skipped: outcome.skipped,
+): VaultCommand<{ converted: number; skipped: readonly SkippedEntry[] }> {
+  return (vault) => {
+    const outcome = transfersFromEntries(vault, transactionIds, otherAccountId);
+    if (!outcome.ok) return outcome;
+    if (outcome.transfers.length === 0) {
+      return { ok: true, vault, converted: 0, skipped: outcome.skipped };
+    }
+    const byId = new Map(outcome.transfers.map((tx) => [tx.id, tx]));
+    return {
+      ok: true,
+      vault: {
+        ...vault,
+        transactions: vault.transactions.map((tx) => byId.get(tx.id) ?? tx),
+      },
+      converted: outcome.transfers.length,
+      skipped: outcome.skipped,
+    };
   };
 }
 
@@ -276,8 +276,10 @@ export function canUndoMarking(tx: Transaction): boolean {
 }
 
 /** The Vault with a marking undone: the Transfer is its imported entry again. */
-export function undoMarking(vault: Vault, transferId: Id): CommandOutcome {
-  const outcome = entryFromTransfer(vault, transferId);
-  if (!outcome.ok) return outcome;
-  return { ok: true, vault: spliced(vault, outcome.transaction) };
+export function undoMarking(transferId: Id): VaultCommand {
+  return (vault) => {
+    const outcome = entryFromTransfer(vault, transferId);
+    if (!outcome.ok) return outcome;
+    return { ok: true, vault: spliced(vault, outcome.transaction) };
+  };
 }

@@ -38,15 +38,15 @@ const vault: Vault = {
   ],
 };
 
-const makeId = () => "acc-new";
+const ctx = { newId: () => "acc-new", now: () => "2026-11-16T00:00:00.000Z" };
 
 describe("addAccount", () => {
   it("adds an Account with a trimmed name", () => {
-    const outcome = addAccount(
-      vault,
-      { name: "  Nubank  ", type: "credit-card", openingBalance: centavos(-120000) },
-      makeId,
-    );
+    const outcome = addAccount({
+      name: "  Nubank  ",
+      type: "credit-card",
+      openingBalance: centavos(-120000),
+    })(vault, ctx);
     if (!outcome.ok) throw new Error(outcome.message);
     expect(outcome.account).toEqual({
       id: "acc-new",
@@ -58,29 +58,29 @@ describe("addAccount", () => {
   });
 
   it("refuses an empty name and a duplicate one, ignoring case and accents", () => {
-    expect(addAccount(vault, { name: " ", type: "cash", openingBalance: centavos(0) }, makeId).ok).toBe(false);
-    const dup = addAccount(vault, { name: "banco inter", type: "cash", openingBalance: centavos(0) }, makeId);
+    expect(addAccount({ name: " ", type: "cash", openingBalance: centavos(0) })(vault, ctx).ok).toBe(false);
+    const dup = addAccount({ name: "banco inter", type: "cash", openingBalance: centavos(0) })(vault, ctx);
     expect(dup.ok).toBe(false);
     if (!dup.ok) expect(dup.message).toMatch(/Já existe/);
   });
 
   it("refuses an unknown type and a fractional balance", () => {
     expect(
-      addAccount(vault, { name: "X", type: "crypto" as never, openingBalance: centavos(0) }, makeId).ok,
+      addAccount({ name: "X", type: "crypto" as never, openingBalance: centavos(0) })(vault, ctx).ok,
     ).toBe(false);
     expect(
-      addAccount(vault, { name: "X", type: "cash", openingBalance: 1.5 as never }, makeId).ok,
+      addAccount({ name: "X", type: "cash", openingBalance: 1.5 as never })(vault, ctx).ok,
     ).toBe(false);
   });
 });
 
 describe("editAccount", () => {
   it("corrects the opening balance, and every derived balance follows with no bookkeeping", () => {
-    const outcome = editAccount(vault, "inter", {
+    const outcome = editAccount("inter", {
       name: "Banco Inter",
       type: "checking",
       openingBalance: centavos(25000),
-    });
+    })(vault, ctx);
     if (!outcome.ok) throw new Error(outcome.message);
     const inter = outcome.vault.accounts.find((a) => a.id === "inter");
     if (!inter) throw new Error("missing");
@@ -91,19 +91,19 @@ describe("editAccount", () => {
   });
 
   it("renames and retypes, keeping the id every Transaction points at", () => {
-    const outcome = editAccount(vault, "cdb", { name: "CDB Liquidez", type: "savings", openingBalance: centavos(0) });
+    const outcome = editAccount("cdb", { name: "CDB Liquidez", type: "savings", openingBalance: centavos(0) })(vault, ctx);
     if (!outcome.ok) throw new Error(outcome.message);
     expect(outcome.vault.accounts.find((a) => a.id === "cdb")?.name).toBe("CDB Liquidez");
     expect(accountTransactionCount(outcome.vault, "cdb")).toBe(1);
   });
 
   it("lets an Account keep its own name, but not take another's", () => {
-    expect(editAccount(vault, "inter", { name: "BANCO INTER", type: "checking", openingBalance: centavos(0) }).ok).toBe(true);
-    expect(editAccount(vault, "inter", { name: "Carteira", type: "checking", openingBalance: centavos(0) }).ok).toBe(false);
+    expect(editAccount("inter", { name: "BANCO INTER", type: "checking", openingBalance: centavos(0) })(vault, ctx).ok).toBe(true);
+    expect(editAccount("inter", { name: "Carteira", type: "checking", openingBalance: centavos(0) })(vault, ctx).ok).toBe(false);
   });
 
   it("refuses an unknown Account", () => {
-    expect(editAccount(vault, "nope", { name: "X", type: "cash", openingBalance: centavos(0) }).ok).toBe(false);
+    expect(editAccount("nope", { name: "X", type: "cash", openingBalance: centavos(0) })(vault, ctx).ok).toBe(false);
   });
 });
 
@@ -115,19 +115,19 @@ describe("deleteAccount", () => {
   });
 
   it("refuses an Account that still has Transactions, naming how many", () => {
-    const outcome = deleteAccount(vault, "cdb");
+    const outcome = deleteAccount("cdb")(vault, ctx);
     expect(outcome.ok).toBe(false);
     if (!outcome.ok) expect(outcome.message).toMatch(/1 transação/);
   });
 
   it("deletes an unused Account along with the Import records made into it", () => {
-    const outcome = deleteAccount(vault, "empty");
+    const outcome = deleteAccount("empty")(vault, ctx);
     if (!outcome.ok) throw new Error(outcome.message);
     expect(outcome.vault.accounts.map((a) => a.id)).toEqual(["inter", "cdb"]);
     expect(outcome.vault.imports.map((i) => i.id)).toEqual(["imp1"]);
   });
 
   it("refuses an unknown Account", () => {
-    expect(deleteAccount(vault, "nope").ok).toBe(false);
+    expect(deleteAccount("nope")(vault, ctx).ok).toBe(false);
   });
 });

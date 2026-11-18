@@ -18,10 +18,11 @@ const base: Vault = {
 };
 
 const newId = () => "b-new";
+const ctx = { newId, now: () => "2026-11-16T00:00:00.000Z" };
 
 describe("setBudget", () => {
   it("creates a Budget for an expense Category", () => {
-    const outcome = setBudget(base, { categoryId: "cat-market", monthlyLimit: centavos(80000) }, newId);
+    const outcome = setBudget({ categoryId: "cat-market", monthlyLimit: centavos(80000) })(base, ctx);
     expect(outcome.ok && outcome.vault.budgets).toEqual([
       { id: "b-new", categoryId: "cat-market", monthlyLimit: centavos(80000) },
     ]);
@@ -32,7 +33,7 @@ describe("setBudget", () => {
       ...base,
       budgets: [{ id: "b-1", categoryId: "cat-market", monthlyLimit: centavos(80000) }],
     };
-    const outcome = setBudget(vault, { categoryId: "cat-market", monthlyLimit: centavos(90000) }, newId);
+    const outcome = setBudget({ categoryId: "cat-market", monthlyLimit: centavos(90000) })(vault, ctx);
     expect(outcome.ok && outcome.vault.budgets).toEqual([
       { id: "b-1", categoryId: "cat-market", monthlyLimit: centavos(90000) },
     ]);
@@ -43,7 +44,7 @@ describe("setBudget", () => {
       ...base,
       budgets: [{ id: "b-1", categoryId: "cat-market", monthlyLimit: centavos(80000) }],
     };
-    const outcome = setBudget(vault, { categoryId: "cat-market", monthlyLimit: centavos(80000) }, newId);
+    const outcome = setBudget({ categoryId: "cat-market", monthlyLimit: centavos(80000) })(vault, ctx);
     expect(outcome.ok && outcome.vault).toBe(vault);
   });
 
@@ -52,27 +53,27 @@ describe("setBudget", () => {
       ...base,
       budgets: [{ id: "b-1", categoryId: "cat-market", monthlyLimit: centavos(80000) }],
     };
-    const outcome = setBudget(vault, { categoryId: "cat-market", monthlyLimit: centavos(0) }, newId);
+    const outcome = setBudget({ categoryId: "cat-market", monthlyLimit: centavos(0) })(vault, ctx);
     expect(outcome.ok && outcome.vault.budgets).toEqual([]);
   });
 
   it("returns the same Vault for zero on a Category that was never budgeted", () => {
-    const outcome = setBudget(base, { categoryId: "cat-market", monthlyLimit: centavos(0) }, newId);
+    const outcome = setBudget({ categoryId: "cat-market", monthlyLimit: centavos(0) })(base, ctx);
     expect(outcome.ok && outcome.vault).toBe(base);
   });
 
   it("refuses a negative or fractional limit", () => {
-    expect(setBudget(base, { categoryId: "cat-market", monthlyLimit: -1 as never }, newId).ok).toBe(false);
-    expect(setBudget(base, { categoryId: "cat-market", monthlyLimit: 10.5 as never }, newId).ok).toBe(false);
+    expect(setBudget({ categoryId: "cat-market", monthlyLimit: -1 as never })(base, ctx).ok).toBe(false);
+    expect(setBudget({ categoryId: "cat-market", monthlyLimit: 10.5 as never })(base, ctx).ok).toBe(false);
   });
 
   it("refuses an income Category: nothing could ever reach that limit", () => {
-    const outcome = setBudget(base, { categoryId: "cat-salary", monthlyLimit: centavos(1000) }, newId);
+    const outcome = setBudget({ categoryId: "cat-salary", monthlyLimit: centavos(1000) })(base, ctx);
     expect(outcome).toEqual({ ok: false, message: "Orçamentos valem só para categorias de despesa." });
   });
 
   it("refuses a Category the Vault does not have", () => {
-    expect(setBudget(base, { categoryId: "cat-ghost", monthlyLimit: centavos(1000) }, newId).ok).toBe(false);
+    expect(setBudget({ categoryId: "cat-ghost", monthlyLimit: centavos(1000) })(base, ctx).ok).toBe(false);
   });
 
   it("never leaves a zero Budget blocking its Category's deletion (the old bug)", () => {
@@ -83,6 +84,6 @@ describe("setBudget", () => {
       budgets: [{ id: "b-1", categoryId: "cat-market", monthlyLimit: centavos(0) }],
     };
     expect(categoryUsage(vault, "cat-market")).toEqual({ transactions: 0, budgets: 0, rules: 0 });
-    expect(deleteCategory(vault, "cat-market").ok).toBe(true);
+    expect(deleteCategory("cat-market")(vault, ctx).ok).toBe(true);
   });
 });

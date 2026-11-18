@@ -1,10 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { addAccount, editAccount } from "../domain/accounts";
 import { deriveAccountBalance, deriveNetWorth } from "../domain/balances";
+import { setBudget } from "../domain/budgets";
+import { classifyAs } from "../domain/classificationRules";
 import { centavos } from "../domain/money";
 import { decodeOfxBytes, parseOfx } from "../domain/ofx";
 import { budgetStatusForMonth, monthlyTotals, spendingByCategoryForMonth } from "../domain/reporting";
-import { planImport } from "../domain/statementImport";
+import { commitImport, planImport } from "../domain/statementImport";
+import { deleteTransaction } from "../domain/transactionEdit";
 import { selectTransactions, NO_FILTER } from "../domain/transactionQuery";
+import { markAsTransfer, undoMarking } from "../domain/transferRecovery";
 import type { Vault } from "../domain/types";
 import { VAULT_COLLECTIONS } from "../domain/types";
 
@@ -98,8 +103,12 @@ describe("a first month with Finance Compass, end to end", () => {
     const idle = () => vi.waitFor(() => expect(disk.has("meta")).toBe(true));
 
     // --- Accounts --------------------------------------------------------
-    const inter = s().addAccount({ name: "Banco Inter", type: "checking", openingBalance: centavos(10000) });
-    const cdb = s().addAccount({ name: "Inter CDB", type: "savings", openingBalance: centavos(0) });
+    const inter = s().run(
+      addAccount({ name: "Banco Inter", type: "checking", openingBalance: centavos(10000) }),
+    );
+    const cdb = s().run(
+      addAccount({ name: "Inter CDB", type: "savings", openingBalance: centavos(0) }),
+    );
     if (!inter.ok || !cdb.ok) throw new Error("accounts refused");
     const INTER = inter.account.id;
     const CDB = cdb.account.id;
@@ -111,7 +120,7 @@ describe("a first month with Finance Compass, end to end", () => {
     const plan = planImport(statement.entries, INTER, s().vault.transactions);
     expect(plan.additions).toHaveLength(6);
     expect(plan.duplicates).toHaveLength(1); // the FITID repeated inside the file
-    s().commitImport({ plan, fileName: "extrato-out.ofx" });
+    s().run(commitImport({ plan, fileName: "extrato-out.ofx" }));
 
     const descriptions = s().vault.transactions.map((t) => t.description);
     expect(descriptions).toContain("SUPERMERCADO SÃO JOSÉ"); // accents survived the lying header
@@ -137,16 +146,16 @@ describe("a first month with Finance Compass, end to end", () => {
     // Accent- and case-insensitive search finds both spellings of the merchant.
     const found = selectTransactions(s().vault, { ...NO_FILTER, search: "supermercado sao jose" });
     expect(found.count).toBe(2);
-    s().setTransactionCategoryMany(found.transactions.map((t) => t.id), market.id);
+    s().run(classifyAs(found.transactions.map((t) => t.id), market.id));
     const byDescription = (text: string) => {
       const tx = s().vault.transactions.find((t) => t.description.includes(text));
       if (!tx) throw new Error(`no ${text}`);
       return tx;
     };
-    s().setTransactionCategory(byDescription("STREAMING").id, streaming.id);
-    s().setTransactionCategory(byDescription("SALÁRIO").id, salary.id);
+    s().run(classifyAs([byDescription("STREAMING").id], streaming.id));
+    s().run(classifyAs([byDescription("SALÁRIO").id], salary.id));
     // An Income can't be filed under an expense Category, whatever is asked.
-    s().setTransactionCategory(byDescription("SALÁRIO").id, market.id);
+    s().run(classifyAs([byDescription("SALÁRIO").id], market.id));
     expect(byDescription("SALÁRIO")).toMatchObject({ categoryId: salary.id });
 
     // --- Before recovering Transfers: the investment move counts as spending.
@@ -157,8 +166,8 @@ describe("a first month with Finance Compass, end to end", () => {
     // --- Mark the investment moves as Transfers ---------------------------
     const aplicacao = byDescription("APLICACAO");
     const resgate = byDescription("RESGATE");
-    expect(s().markTransactionAsTransfer(aplicacao.id, CDB).ok).toBe(true);
-    expect(s().markTransactionAsTransfer(resgate.id, CDB).ok).toBe(true);
+    expect(s().run(markAsTransfer(aplicacao.id, CDB)).ok).toBe(true);
+    expect(s().run(markAsTransfer(resgate.id, CDB)).ok).toBe(true);
 
     const [recovered] = monthlyTotals(s().vault, ["2026-10"]);
     expect(recovered.expense).toBe(31245 + 8730 + 3990); // the 250,01 is no longer "spent"
@@ -173,12 +182,12 @@ describe("a first month with Finance Compass, end to end", () => {
     expect(planImport(statement.entries, INTER, s().vault.transactions).additions).toEqual([]);
 
     // --- A wrong marking is undone, fitid and all ---------------------------
-    expect(s().revertTransferToEntry(resgate.id).ok).toBe(true);
+    expect(s().run(undoMarking(resgate.id)).ok).toBe(true);
     expect(byDescription("RESGATE")).toMatchObject({ kind: "income", fitid: "INT-006", categoryId: null });
     expect(planImport(statement.entries, INTER, s().vault.transactions).additions).toEqual([]);
 
     // --- Budgets -------------------------------------------------------------
-    expect(s().setBudget({ categoryId: market.id, monthlyLimit: centavos(35000) }).ok).toBe(true);
+    expect(s().run(setBudget({ categoryId: market.id, monthlyLimit: centavos(35000) })).ok).toBe(true);
     const [budget] = budgetStatusForMonth(s().vault, "2026-10");
     expect(budget).toMatchObject({ categoryName: "Mercado", spent: 39975, limit: 35000 });
     expect(budget.remaining).toBe(-4975);
@@ -190,12 +199,18 @@ describe("a first month with Finance Compass, end to end", () => {
     // --- Corrections ---------------------------------------------------------
     // A typo in an opening balance is fixed, and only that Account moves.
     expect(
-      s().editAccount(INTER, { name: "Banco Inter", type: "checking", openingBalance: centavos(20000) }).ok,
+      s().run(
+        editAccount(INTER, {
+          name: "Banco Inter",
+          type: "checking",
+          openingBalance: centavos(20000),
+        }),
+      ).ok,
     ).toBe(true);
     expect(balanceOf(INTER)).toBe(461034);
 
     // Deleting an imported entry lets the next import bring it back — and only it.
-    s().deleteTransaction(byDescription("STREAMING").id);
+    s().run(deleteTransaction(byDescription("STREAMING").id));
     const again = planImport(statement.entries, INTER, s().vault.transactions);
     expect(again.additions.map((e) => e.fitid)).toEqual(["INT-005"]);
 

@@ -1,4 +1,4 @@
-import type { CommandOutcome } from "./command";
+import type { VaultCommand } from "./command";
 import { type Centavos, centavos, formatBRL } from "./money";
 import type { Id, Vault, Wish } from "./types";
 import { isOpenWish } from "./types";
@@ -46,13 +46,6 @@ export interface WishInput {
   price: Centavos;
 }
 
-/** What a session has to provide: ids and the clock, so commands stay pure. */
-export interface WishDeps {
-  newId: () => Id;
-  /** The current moment as an ISO timestamp. */
-  now: () => string;
-}
-
 const deadlineLabel = (wish: Wish): string =>
   new Date(wishDeadline(wish)).toLocaleString("pt-BR", {
     day: "2-digit",
@@ -77,68 +70,72 @@ function findOpenWish(
 }
 
 /** Add a Wish, which starts its wait at this very moment. */
-export function addWish(
-  vault: Vault,
-  input: WishInput,
-  deps: WishDeps,
-): CommandOutcome<{ wish: Wish }> {
-  const name = input.name.trim();
-  if (name === "") {
-    return { ok: false, message: "Dê um nome ao desejo." };
-  }
-  if (!Number.isInteger(input.price) || input.price <= 0) {
-    return { ok: false, message: "Informe um preço maior que zero." };
-  }
-  const wish: Wish = {
-    id: deps.newId(),
-    name,
-    price: input.price,
-    createdAt: deps.now(),
+export function addWish(input: WishInput): VaultCommand<{ wish: Wish }> {
+  return (vault, ctx) => {
+    const name = input.name.trim();
+    if (name === "") {
+      return { ok: false, message: "Dê um nome ao desejo." };
+    }
+    if (!Number.isInteger(input.price) || input.price <= 0) {
+      return { ok: false, message: "Informe um preço maior que zero." };
+    }
+    const wish: Wish = {
+      id: ctx.newId(),
+      name,
+      price: input.price,
+      createdAt: ctx.now(),
+    };
+    return { ok: true, vault: { ...vault, wishes: [...vault.wishes, wish] }, wish };
   };
-  return { ok: true, vault: { ...vault, wishes: [...vault.wishes, wish] }, wish };
 }
 
 /**
  * Buy a Wish — refused while its wait is still running. The refusal names the
  * moment the wait ends, so the answer is "not yet, until then", never a wall.
  */
-export function buyWish(vault: Vault, wishId: Id, deps: WishDeps): CommandOutcome {
-  const found = findOpenWish(vault, wishId);
-  if (!found.ok) return found;
-  const { wish } = found;
-  const nowISO = deps.now();
-  if (!isWaitOver(wish, Date.parse(nowISO))) {
-    const rule = waitRuleFor(wish.price) === "30-days" ? "30 dias" : "48 horas";
-    return {
-      ok: false,
-      message:
-        `${wish.name} (${formatBRL(wish.price)}) ainda está na espera de ${rule}. ` +
-        `Se continuar querendo, dá para comprar a partir de ${deadlineLabel(wish)}.`,
-    };
-  }
-  return { ok: true, vault: decide(vault, wishId, "bought", nowISO) };
+export function buyWish(wishId: Id): VaultCommand {
+  return (vault, ctx) => {
+    const found = findOpenWish(vault, wishId);
+    if (!found.ok) return found;
+    const { wish } = found;
+    const nowISO = ctx.now();
+    if (!isWaitOver(wish, Date.parse(nowISO))) {
+      const rule = waitRuleFor(wish.price) === "30-days" ? "30 dias" : "48 horas";
+      return {
+        ok: false,
+        message:
+          `${wish.name} (${formatBRL(wish.price)}) ainda está na espera de ${rule}. ` +
+          `Se continuar querendo, dá para comprar a partir de ${deadlineLabel(wish)}.`,
+      };
+    }
+    return { ok: true, vault: decide(vault, wishId, "bought", nowISO) };
+  };
 }
 
 /**
  * Give a Wish up. Allowed at any moment, wait or no wait: deciding *not* to
  * spend is exactly what the list is for, so it is never made to wait.
  */
-export function dropWish(vault: Vault, wishId: Id, deps: WishDeps): CommandOutcome {
-  const found = findOpenWish(vault, wishId);
-  if (!found.ok) return found;
-  return { ok: true, vault: decide(vault, wishId, "dropped", deps.now()) };
+export function dropWish(wishId: Id): VaultCommand {
+  return (vault, ctx) => {
+    const found = findOpenWish(vault, wishId);
+    if (!found.ok) return found;
+    return { ok: true, vault: decide(vault, wishId, "dropped", ctx.now()) };
+  };
 }
 
 /** Remove a decided Wish from the history. An open one is dropped, not deleted. */
-export function deleteWish(vault: Vault, wishId: Id): CommandOutcome {
-  const wish = vault.wishes.find((w) => w.id === wishId);
-  if (wish === undefined) {
-    return { ok: false, message: "Esse desejo não existe mais." };
-  }
-  if (isOpenWish(wish)) {
-    return { ok: false, message: "Um desejo em aberto se desiste, não se apaga." };
-  }
-  return { ok: true, vault: { ...vault, wishes: vault.wishes.filter((w) => w.id !== wishId) } };
+export function deleteWish(wishId: Id): VaultCommand {
+  return (vault) => {
+    const wish = vault.wishes.find((w) => w.id === wishId);
+    if (wish === undefined) {
+      return { ok: false, message: "Esse desejo não existe mais." };
+    }
+    if (isOpenWish(wish)) {
+      return { ok: false, message: "Um desejo em aberto se desiste, não se apaga." };
+    }
+    return { ok: true, vault: { ...vault, wishes: vault.wishes.filter((w) => w.id !== wishId) } };
+  };
 }
 
 function decide(

@@ -1,7 +1,7 @@
 import { categoryKind } from "./categories";
-import type { CommandOutcome } from "./command";
+import type { VaultCommand } from "./command";
 import type { Centavos } from "./money";
-import type { Budget, Id, Vault } from "./types";
+import type { Budget, Id } from "./types";
 
 /**
  * Setting the monthly limit of one expense Category.
@@ -17,33 +17,31 @@ import type { Budget, Id, Vault } from "./types";
  */
 
 /** The Vault with the Category's monthly limit set — or removed, when it is zero. */
-export function setBudget(
-  vault: Vault,
-  input: { categoryId: Id; monthlyLimit: Centavos },
-  newId: () => Id,
-): CommandOutcome {
-  const { categoryId, monthlyLimit } = input;
-  if (!Number.isInteger(monthlyLimit) || monthlyLimit < 0) {
-    return { ok: false, message: "Informe um limite igual ou maior que zero." };
-  }
-  // Only expenses count toward a Budget, so a Budget on an income Category
-  // would be a limit nothing could ever reach.
-  if (categoryKind(vault, categoryId) !== "expense") {
-    return { ok: false, message: "Orçamentos valem só para categorias de despesa." };
-  }
-  const existing = vault.budgets.find((b) => b.categoryId === categoryId);
-  if (monthlyLimit === 0) {
-    // "Don't budget this" removes the row; not budgeting it already is no change.
-    if (existing === undefined) return { ok: true, vault };
-    return {
-      ok: true,
-      vault: { ...vault, budgets: vault.budgets.filter((b) => b.categoryId !== categoryId) },
-    };
-  }
-  // The same limit again is nothing to write.
-  if (existing?.monthlyLimit === monthlyLimit) return { ok: true, vault };
-  const budgets = existing
-    ? vault.budgets.map((b) => (b.categoryId === categoryId ? { ...b, monthlyLimit } : b))
-    : [...vault.budgets, { id: newId(), categoryId, monthlyLimit } satisfies Budget];
-  return { ok: true, vault: { ...vault, budgets } };
+export function setBudget(input: { categoryId: Id; monthlyLimit: Centavos }): VaultCommand {
+  return (vault, ctx) => {
+    const { categoryId, monthlyLimit } = input;
+    if (!Number.isInteger(monthlyLimit) || monthlyLimit < 0) {
+      return { ok: false, message: "Informe um limite igual ou maior que zero." };
+    }
+    // Only expenses count toward a Budget, so a Budget on an income Category
+    // would be a limit nothing could ever reach.
+    if (categoryKind(vault, categoryId) !== "expense") {
+      return { ok: false, message: "Orçamentos valem só para categorias de despesa." };
+    }
+    const existing = vault.budgets.find((b) => b.categoryId === categoryId);
+    if (monthlyLimit === 0) {
+      // "Don't budget this" removes the row; not budgeting it already is no change.
+      if (existing === undefined) return { ok: true, vault };
+      return {
+        ok: true,
+        vault: { ...vault, budgets: vault.budgets.filter((b) => b.categoryId !== categoryId) },
+      };
+    }
+    // The same limit again is nothing to write.
+    if (existing?.monthlyLimit === monthlyLimit) return { ok: true, vault };
+    const budgets = existing
+      ? vault.budgets.map((b) => (b.categoryId === categoryId ? { ...b, monthlyLimit } : b))
+      : [...vault.budgets, { id: ctx.newId(), categoryId, monthlyLimit } satisfies Budget];
+    return { ok: true, vault: { ...vault, budgets } };
+  };
 }

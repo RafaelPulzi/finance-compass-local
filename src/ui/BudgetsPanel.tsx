@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { setBudget } from "../domain/budgets";
 import { ZERO, formatBRLInput, parseBRL } from "../domain/money";
 import { budgetStatusForMonth, type MonthKey } from "../domain/reporting";
 import { useVault } from "../store/useVault";
@@ -7,7 +8,7 @@ import { monthLongLabel } from "./charts/format";
 
 export function BudgetsPanel({ month }: { month: MonthKey }) {
   const vault = useVault((s) => s.vault);
-  const setBudget = useVault((s) => s.setBudget);
+  const run = useVault((s) => s.run);
 
   const statuses = useMemo(() => budgetStatusForMonth(vault, month), [vault, month]);
 
@@ -35,7 +36,7 @@ export function BudgetsPanel({ month }: { month: MonthKey }) {
     try {
       const monthlyLimit = draft.trim() === "" ? parseBRL("0") : parseBRL(draft);
       if (monthlyLimit < 0) throw new Error();
-      const result = setBudget({ categoryId, monthlyLimit });
+      const result = run(setBudget({ categoryId, monthlyLimit }));
       setError(result.ok ? null : result.message);
     } catch {
       setError("Valor inválido. Use o formato 800,00.");

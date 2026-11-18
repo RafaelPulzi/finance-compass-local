@@ -46,7 +46,7 @@ describe("the two waiting rules", () => {
 
 describe("addWish", () => {
   it("starts the wait at this very moment, with the name trimmed", () => {
-    const result = addWish(vaultWith(), { name: "  Fone  ", price: centavos(100) }, at(T0));
+    const result = addWish({ name: "  Fone  ", price: centavos(100) })(vaultWith(), at(T0));
     expect(result).toMatchObject({
       ok: true,
       wish: { id: "new", name: "Fone", price: 100, createdAt: T0 },
@@ -55,28 +55,28 @@ describe("addWish", () => {
   });
 
   it("refuses a nameless or free wish", () => {
-    expect(addWish(vaultWith(), { name: "   ", price: centavos(100) }, at(T0)).ok).toBe(false);
-    expect(addWish(vaultWith(), { name: "Fone", price: centavos(0) }, at(T0)).ok).toBe(false);
-    expect(addWish(vaultWith(), { name: "Fone", price: centavos(-5) }, at(T0)).ok).toBe(false);
+    expect(addWish({ name: "   ", price: centavos(100) })(vaultWith(), at(T0)).ok).toBe(false);
+    expect(addWish({ name: "Fone", price: centavos(0) })(vaultWith(), at(T0)).ok).toBe(false);
+    expect(addWish({ name: "Fone", price: centavos(-5) })(vaultWith(), at(T0)).ok).toBe(false);
   });
 });
 
 describe("buyWish", () => {
   it("is refused while the wait runs, and the refusal says until when", () => {
-    const result = buyWish(vaultWith(wish()), "w1", at(after(SHORT_WAIT_MS - 1)));
+    const result = buyWish("w1")(vaultWith(wish()), at(after(SHORT_WAIT_MS - 1)));
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.message).toMatch(/48 horas/);
   });
 
   it("a refused buy changes nothing", () => {
     const vault = vaultWith(wish());
-    buyWish(vault, "w1", at(T0));
+    buyWish("w1")(vault, at(T0));
     expect(vault.wishes[0].decision).toBeUndefined();
   });
 
   it("is allowed the moment the wait ends", () => {
     const decidedAt = after(SHORT_WAIT_MS);
-    const result = buyWish(vaultWith(wish()), "w1", at(decidedAt));
+    const result = buyWish("w1")(vaultWith(wish()), at(decidedAt));
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.vault.wishes[0]).toMatchObject({ decision: "bought", decidedAt });
@@ -85,20 +85,20 @@ describe("buyWish", () => {
 
   it("an expensive wish is still waiting after 48 hours", () => {
     const vault = vaultWith(wish({ price: THIRTY_DAY_THRESHOLD }));
-    expect(buyWish(vault, "w1", at(after(SHORT_WAIT_MS))).ok).toBe(false);
-    expect(buyWish(vault, "w1", at(after(LONG_WAIT_MS))).ok).toBe(true);
+    expect(buyWish("w1")(vault, at(after(SHORT_WAIT_MS))).ok).toBe(false);
+    expect(buyWish("w1")(vault, at(after(LONG_WAIT_MS))).ok).toBe(true);
   });
 
   it("refuses a wish that doesn't exist or was already decided", () => {
-    expect(buyWish(vaultWith(), "ghost", at(T0)).ok).toBe(false);
+    expect(buyWish("ghost")(vaultWith(), at(T0)).ok).toBe(false);
     const decided = vaultWith(wish({ decision: "dropped", decidedAt: T0 }));
-    expect(buyWish(decided, "w1", at(after(LONG_WAIT_MS))).ok).toBe(false);
+    expect(buyWish("w1")(decided, at(after(LONG_WAIT_MS))).ok).toBe(false);
   });
 });
 
 describe("dropWish", () => {
   it("never waits: giving a wish up is allowed immediately", () => {
-    const result = dropWish(vaultWith(wish({ price: THIRTY_DAY_THRESHOLD })), "w1", at(T0));
+    const result = dropWish("w1")(vaultWith(wish({ price: THIRTY_DAY_THRESHOLD })), at(T0));
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.vault.wishes[0]).toMatchObject({ decision: "dropped", decidedAt: T0 });
@@ -107,22 +107,22 @@ describe("dropWish", () => {
 
   it("refuses a wish already decided", () => {
     const decided = vaultWith(wish({ decision: "bought", decidedAt: T0 }));
-    expect(dropWish(decided, "w1", at(T0)).ok).toBe(false);
+    expect(dropWish("w1")(decided, at(T0)).ok).toBe(false);
   });
 });
 
 describe("deleteWish", () => {
   it("removes a decided wish from the history", () => {
-    const result = deleteWish(vaultWith(wish({ decision: "dropped", decidedAt: T0 })), "w1");
+    const result = deleteWish("w1")(vaultWith(wish({ decision: "dropped", decidedAt: T0 })), at(T0));
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.vault.wishes).toEqual([]);
   });
 
   it("refuses an open wish: it gets dropped, not erased", () => {
-    expect(deleteWish(vaultWith(wish()), "w1").ok).toBe(false);
+    expect(deleteWish("w1")(vaultWith(wish()), at(T0)).ok).toBe(false);
   });
 
   it("refuses a wish that doesn't exist", () => {
-    expect(deleteWish(vaultWith(), "ghost").ok).toBe(false);
+    expect(deleteWish("ghost")(vaultWith(), at(T0)).ok).toBe(false);
   });
 });

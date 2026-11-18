@@ -91,7 +91,10 @@ describe("markingPreview", () => {
     const ids = [e.id, already.id, i.id];
 
     const preview = markingPreview(vault, ids, SAVINGS);
-    const outcome = markAllAsTransfers(vault, ids, SAVINGS);
+    const outcome = markAllAsTransfers(ids, SAVINGS)(vault, {
+      newId: () => "id-test",
+      now: () => "2026-11-16T00:00:00.000Z",
+    });
     if (!outcome.ok) throw new Error(outcome.message);
     expect(outcome.converted).toBe(preview.converts);
     expect(outcome.skipped).toHaveLength(preview.skipped);

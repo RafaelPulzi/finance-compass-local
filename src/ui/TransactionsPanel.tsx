@@ -1,7 +1,7 @@
 import { type FormEvent, useMemo, useState } from "react";
 import { categoryTree, treeHas } from "../domain/categories";
-import { suggestCategories } from "../domain/categorySuggestions";
-import { ruleOfferFor } from "../domain/classificationRules";
+import { applySuggestions, suggestCategories } from "../domain/categorySuggestions";
+import { addRule, classifyAs, ruleOfferFor } from "../domain/classificationRules";
 import { formatDateBR } from "../domain/dates";
 import { formatBRL, parseBRL } from "../domain/money";
 import { markingPreview, selectedDescriptions, selectedKind } from "../domain/selection";
@@ -12,7 +12,14 @@ import {
   selectTransactions,
   uncategorizedCount,
 } from "../domain/transactionQuery";
-import { canUndoMarking } from "../domain/transferRecovery";
+import { addTransaction } from "../domain/transactionCreate";
+import { deleteTransaction, editTransaction } from "../domain/transactionEdit";
+import {
+  canUndoMarking,
+  markAllAsTransfers,
+  markAsTransfer,
+  undoMarking,
+} from "../domain/transferRecovery";
 import type { Id, Transaction } from "../domain/types";
 import { useVault } from "../store/useVault";
 import { BulkActionsBar } from "./BulkActionsBar";
@@ -35,18 +42,7 @@ const PAGE_SIZE = 50;
 
 export function TransactionsPanel() {
   const vault = useVault((s) => s.vault);
-  const addIncome = useVault((s) => s.addIncome);
-  const addExpense = useVault((s) => s.addExpense);
-  const addTransfer = useVault((s) => s.addTransfer);
-  const setTransactionCategory = useVault((s) => s.setTransactionCategory);
-  const setTransactionCategoryMany = useVault((s) => s.setTransactionCategoryMany);
-  const editTransaction = useVault((s) => s.editTransaction);
-  const deleteTransaction = useVault((s) => s.deleteTransaction);
-  const markTransactionAsTransfer = useVault((s) => s.markTransactionAsTransfer);
-  const markTransactionsAsTransfer = useVault((s) => s.markTransactionsAsTransfer);
-  const addRule = useVault((s) => s.addRule);
-  const revertTransferToEntry = useVault((s) => s.revertTransferToEntry);
-  const applySuggestedCategories = useVault((s) => s.applySuggestedCategories);
+  const run = useVault((s) => s.run);
 
   const [kind, setKind] = useState<Kind>("expense");
   const [date, setDate] = useState(todayISO());
@@ -184,15 +180,21 @@ export function TransactionsPanel() {
     // offered Rule is guessed from.
     const descriptions = selectedDescriptions(vault, selected);
 
-    setTransactionCategoryMany([...selected], categoryId);
+    const result = run(classifyAs([...selected], categoryId));
+    if (!result.ok) {
+      setBulkNotice(result.message);
+      return;
+    }
     setSelected(new Set());
     setBulkNotice(null);
-    setRuleOffer(ruleOfferFor(vault, descriptions, categoryId));
+    // A refused or empty classification taught the app nothing, so only real
+    // work earns a Rule offer.
+    setRuleOffer(result.changed > 0 ? ruleOfferFor(vault, descriptions, categoryId) : null);
   }
 
   function acceptRuleOffer(pattern: string) {
     if (ruleOffer === null) return;
-    const outcome = addRule({ pattern, categoryId: ruleOffer.categoryId });
+    const outcome = run(addRule({ pattern, categoryId: ruleOffer.categoryId }));
     setRuleOffer(null);
     setBulkNotice(
       outcome.ok
@@ -204,7 +206,7 @@ export function TransactionsPanel() {
   }
 
   function markSelectedAsTransfers(otherAccountId: Id) {
-    const result = markTransactionsAsTransfer([...selected], otherAccountId);
+    const result = run(markAllAsTransfers([...selected], otherAccountId));
     if (!result.ok) return setBulkNotice(result.message);
 
     // Every skip is named, not just counted: a batch chosen by description can
@@ -239,7 +241,8 @@ export function TransactionsPanel() {
   );
 
   function applyAllSuggestions() {
-    const { applied } = applySuggestedCategories();
+    const outcome = run(applySuggestions());
+    const applied = outcome.ok ? outcome.applied : 0;
     setBulkNotice(
       applied === 0
         ? "Nenhuma sugestão para aplicar."
@@ -261,15 +264,16 @@ export function TransactionsPanel() {
     }
     if (!accountId) return setError("Escolha uma conta.");
 
-    let result;
-    if (kind === "transfer") {
-      if (!toAccountId) return setError("Escolha a conta de destino.");
-      result = addTransfer({ date, amount: value, fromAccountId: accountId, toAccountId, description });
-    } else {
-      if (!categoryId) return setError("Escolha uma categoria.");
-      const payload = { date, amount: value, accountId, categoryId, description };
-      result = kind === "income" ? addIncome(payload) : addExpense(payload);
-    }
+    if (kind === "transfer" && !toAccountId) return setError("Escolha a conta de destino.");
+    if (kind !== "transfer" && !categoryId) return setError("Escolha uma categoria.");
+    // One entry point whatever the kind: the domain decided that, the form obeys.
+    const result = run(
+      addTransaction(
+        kind === "transfer"
+          ? { kind, date, amount: value, fromAccountId: accountId, toAccountId, description }
+          : { kind, date, amount: value, accountId, categoryId, description },
+      ),
+    );
     // The domain has the last word; a refusal keeps what was typed so it can be fixed.
     if (!result.ok) return setError(result.message);
     setAmount("");
@@ -465,7 +469,7 @@ export function TransactionsPanel() {
                 accounts={vault.accounts}
                 treesByKind={treesByKind}
                 onSave={(changes) => {
-                  const result = editTransaction(tx.id, changes);
+                  const result = run(editTransaction(tx.id, changes));
                   // A refused edit keeps the form open with its message showing.
                   if (result.ok) setEditingId(null);
                   return result;
@@ -477,7 +481,7 @@ export function TransactionsPanel() {
                 transaction={tx}
                 accounts={vault.accounts}
                 onMark={(otherAccountId) => {
-                  const result = markTransactionAsTransfer(tx.id, otherAccountId);
+                  const result = run(markAsTransfer(tx.id, otherAccountId));
                   // A refused marking keeps the form open with its message showing.
                   if (result.ok) setMarkingId(null);
                   return result;
@@ -496,8 +500,9 @@ export function TransactionsPanel() {
                   type="button"
                   className="rounded-md bg-red-600 px-3 py-1 text-xs font-medium text-white hover:bg-red-700"
                   onClick={() => {
-                    deleteTransaction(tx.id);
+                    const result = run(deleteTransaction(tx.id));
                     setDeletingId(null);
+                    setRowError(result.ok ? null : { id: tx.id, message: result.message });
                   }}
                 >
                   Confirmar exclusão
@@ -542,9 +547,13 @@ export function TransactionsPanel() {
                       aria-label={`Categoria de ${tx.description || "transação sem descrição"}`}
                       className="rounded border border-amber-400 bg-amber-50 px-1 py-0.5 text-xs text-amber-900 dark:bg-amber-950 dark:text-amber-200"
                       value=""
-                      onChange={(e) =>
-                        e.target.value && setTransactionCategory(tx.id, e.target.value)
-                      }
+                      onChange={(e) => {
+                        if (!e.target.value) return;
+                        const result = run(classifyAs([tx.id], e.target.value));
+                        setRowError(
+                          result.ok ? null : { id: tx.id, message: result.message },
+                        );
+                      }}
                     >
                       <option value="">Sem categoria</option>
                       <CategoryOptions tree={treesByKind[tx.kind]} />
@@ -560,7 +569,7 @@ export function TransactionsPanel() {
                         onClick={() => {
                           const suggestion = suggestionFor.get(tx.id);
                           if (suggestion !== undefined)
-                            setTransactionCategory(tx.id, suggestion.categoryId);
+                            run(classifyAs([tx.id], suggestion.categoryId));
                         }}
                       >
                         sugestão: {categoryName.get(suggestionFor.get(tx.id)?.categoryId ?? "") ?? "?"}
@@ -606,7 +615,7 @@ export function TransactionsPanel() {
                     aria-label={`Desfazer transferência ${tx.description || "sem descrição"}`}
                     className="underline hover:text-slate-700 dark:hover:text-slate-200"
                     onClick={() => {
-                      const result = revertTransferToEntry(tx.id);
+                      const result = run(undoMarking(tx.id));
                       setRowError(
                         result.ok ? null : { id: tx.id, message: result.message },
                       );

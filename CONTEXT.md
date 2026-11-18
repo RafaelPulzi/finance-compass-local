@@ -12,6 +12,10 @@ _Avoid_: Database, workspace, profile
 One change to the Vault, decided but not yet made. A Command is built from the user's input (`classifyAs(ids, categoryId)`), is pure — given the Vault and the session's ids and clock, it answers with the whole Vault it would leave behind, or why it refuses — and only the store's single `run` ever executes one and writes the result (ADR-0010). Every write in the app is a Command; nothing else may change a Vault.
 _Avoid_: Action, mutation, handler, setter
 
+**Worklist**:
+The state of working through the Transactions page: the filter in force, which page of the result is being read, the selection being held, which row has a form open, the Rule being offered, and what the app last said. It is *page* state and never Vault truth — none of it is saved, and leaving the page forgets all of it. Each gesture on the page owns its consequences: it runs its Command and, in the same step, closes the row form, lets go of the rows that have left the selection, and records what happened (ADR-0011).
+_Avoid_: Backlog (it names only the uncategorized part), triage, UI state, page state
+
 **Transaction**:
 A single record of money moving on a given date. Every Transaction is exactly one of three kinds — Income, Expense, or Transfer.
 _Avoid_: Entry, record, movement, posting

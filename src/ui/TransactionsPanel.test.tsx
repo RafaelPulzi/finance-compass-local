@@ -601,6 +601,52 @@ describe("TransactionsPanel editing and deleting", () => {
   });
 });
 
+describe("a selection the rows in it have left", () => {
+  const vault: Vault = {
+    ...base,
+    transactions: [
+      expense("e1", "2026-10-02", 25001, "APLICACAO CDB 1", null),
+      expense("e2", "2026-10-03", 25001, "APLICACAO CDB 2", null),
+    ],
+  };
+
+  async function selectBothThenDeleteTheFirst() {
+    const user = userEvent.setup();
+    await user.click(screen.getByLabelText("Selecionar APLICACAO CDB 1"));
+    await user.click(screen.getByLabelText("Selecionar APLICACAO CDB 2"));
+    expect(screen.getByText("2 selecionadas")).toBeInTheDocument();
+
+    await user.click(screen.getByLabelText("Excluir APLICACAO CDB 1"));
+    await user.click(screen.getByRole("button", { name: "Confirmar exclusão" }));
+    return user;
+  }
+
+  it("counts only the rows still there after one of them is deleted", async () => {
+    show(vault);
+    await selectBothThenDeleteTheFirst();
+
+    // The deleted row cannot be part of a selection any more: a count that
+    // still includes it promises work on a Transaction that no longer exists.
+    expect(screen.getByText("1 selecionada")).toBeInTheDocument();
+  });
+
+  it("does not carry a deleted row into the next bulk marking", async () => {
+    show(vault);
+    const user = await selectBothThenDeleteTheFirst();
+
+    await user.selectOptions(
+      screen.getByLabelText("Outra conta das transferências"),
+      SAVINGS,
+    );
+    await user.click(screen.getByRole("button", { name: /Confirmar/ }));
+
+    const notice = screen.getByRole("status").textContent ?? "";
+    expect(notice).toContain("1 lançamento virou transferência.");
+    expect(notice).not.toContain("ignorado");
+    expect(notice).not.toContain("Transação não encontrada.");
+  });
+});
+
 describe("marking an entry as a Transfer", () => {
   const imported = (
     id: string,

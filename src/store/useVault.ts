@@ -17,6 +17,14 @@ type Status = "loading" | "ready" | "error";
 /** Outcome of changing the vault folder, reported back to the UI that asked. */
 export type VaultSwitchResult = { ok: true } | { ok: false; message: string };
 
+/**
+ * The store's single way to write, named so a caller can be handed it without
+ * being handed the store (see `run` below, and ADR-0010).
+ */
+export type RunCommand = <O extends CommandOutcome<object>>(
+  command: (vault: Vault, ctx: SessionContext) => O,
+) => CommandResult<O>;
+
 interface VaultState {
   vault: Vault;
   status: Status;
@@ -60,9 +68,7 @@ interface VaultState {
    * `classifyAs(ids, categoryId)`, `addTransaction(input)` — so a new feature
    * adds a Command there and this interface does not grow.
    */
-  run: <O extends CommandOutcome<object>>(
-    command: (vault: Vault, ctx: SessionContext) => O,
-  ) => CommandResult<O>;
+  run: RunCommand;
 }
 
 /**

@@ -1,27 +1,15 @@
 import { type FormEvent, useMemo, useState } from "react";
 import { categoryTree, treeHas } from "../domain/categories";
-import { applySuggestions, suggestCategories } from "../domain/categorySuggestions";
-import { addRule, classifyAs, ruleOfferFor } from "../domain/classificationRules";
 import { formatDateBR } from "../domain/dates";
 import { formatBRL, parseBRL } from "../domain/money";
-import { markingPreview, selectedDescriptions, selectedKind } from "../domain/selection";
-import {
-  NO_FILTER,
-  type TransactionFilter,
-  monthsWithTransactions,
-  selectTransactions,
-  uncategorizedCount,
-} from "../domain/transactionQuery";
+import { markingPreview } from "../domain/selection";
 import { addTransaction } from "../domain/transactionCreate";
-import { deleteTransaction, editTransaction } from "../domain/transactionEdit";
-import {
-  canUndoMarking,
-  markAllAsTransfers,
-  markAsTransfer,
-  undoMarking,
-} from "../domain/transferRecovery";
+import { monthsWithTransactions } from "../domain/transactionQuery";
 import type { Id, Transaction } from "../domain/types";
+import { canUndoMarking } from "../domain/transferRecovery";
 import { useVault } from "../store/useVault";
+import type { BulkNotice } from "../worklist/worklist";
+import { useWorklist } from "../worklist/useWorklist";
 import { BulkActionsBar } from "./BulkActionsBar";
 import { RuleOfferForm } from "./RuleOfferForm";
 import { CategoryOptions, type CategoryTree } from "./CategoryOptions";
@@ -34,15 +22,56 @@ import { todayISO } from "./labels";
 type Kind = Transaction["kind"];
 
 /**
- * How many Transactions one page of the list shows. A Vault holding a couple of
- * years of imported Statements runs to several hundred, which is well within
- * what the DOM handles in pages — no windowing library earns its place here.
+ * What the Worklist said, in Portuguese.
+ *
+ * The module reports structured outcomes — `{ converted, skipped }`,
+ * `{ applied }` — and the words are built here, where every other piece of
+ * Portuguese in the app lives. It keeps the module's tests off these strings.
  */
-const PAGE_SIZE = 50;
+function noticeText(notice: BulkNotice, nameOfCategory: (id: Id) => string): string {
+  switch (notice.said) {
+    case "refused":
+      return notice.message;
+
+    case "marked": {
+      // Every skip is named, not just counted: a batch chosen by description
+      // can sweep in an entry that cannot convert, and a count alone would
+      // leave the user believing their whole selection moved.
+      const converted =
+        notice.converted === 1
+          ? "1 lançamento virou transferência."
+          : `${notice.converted} lançamentos viraram transferências.`;
+      if (notice.skipped.length === 0) return converted;
+      const reasons = [...new Set(notice.skipped.map((s) => s.message))];
+      return `${converted} ${notice.skipped.length} ignorado${
+        notice.skipped.length === 1 ? "" : "s"
+      }: ${reasons.join(" ")}`;
+    }
+
+    case "suggestionsApplied":
+      return notice.applied === 0
+        ? "Nenhuma sugestão para aplicar."
+        : notice.applied === 1
+          ? "1 transação categorizada a partir das suas decisões anteriores."
+          : `${notice.applied} transações categorizadas a partir das suas decisões anteriores.`;
+
+    case "ruleCreated":
+      return `Regra criada: descrições com “${notice.pattern}” vão para ${nameOfCategory(
+        notice.categoryId,
+      )}. Aplique-a ao resto na página Regras.`;
+  }
+}
 
 export function TransactionsPanel() {
   const vault = useVault((s) => s.vault);
   const run = useVault((s) => s.run);
+
+  /**
+   * Working through the list — the selection, which row has a form open, what
+   * the app last said — is the Worklist's, not this component's (ADR-0011).
+   */
+  const list = useWorklist();
+  const { state, view } = list;
 
   const [kind, setKind] = useState<Kind>("expense");
   const [date, setDate] = useState(todayISO());
@@ -52,75 +81,6 @@ export function TransactionsPanel() {
   const [toAccountId, setToAccountId] = useState("");
   const [categoryId, setCategoryId] = useState("");
   const [error, setError] = useState<string | null>(null);
-
-  const [filter, setFilter] = useState<TransactionFilter>(NO_FILTER);
-  const [page, setPage] = useState(0);
-  const [selected, setSelected] = useState<ReadonlySet<Id>>(new Set());
-  /** At most one row is being edited, and at most one is awaiting a delete confirmation. */
-  const [editingId, setEditingId] = useState<Id | null>(null);
-  const [deletingId, setDeletingId] = useState<Id | null>(null);
-  /** At most one row is naming the other side of a Transfer. */
-  const [markingId, setMarkingId] = useState<Id | null>(null);
-  /** A refusal that has no form of its own to show it, shown on its row. */
-  const [rowError, setRowError] = useState<{ id: Id; message: string } | null>(null);
-  /**
-   * What the last bulk action did. It outlives the selection on purpose: the
-   * selection is cleared by the action, so a message living in the bar would
-   * disappear with the bar that reported it.
-   */
-  const [bulkNotice, setBulkNotice] = useState<string | null>(null);
-  /** A Rule the app is offering to remember, from classification just done by hand. */
-  const [ruleOffer, setRuleOffer] = useState<{ pattern: string; categoryId: Id } | null>(
-    null,
-  );
-
-  /**
-   * A new filter is a new result set, so the page the user was on no longer
-   * means anything — and neither does the selection. Keeping a selection the
-   * user can no longer see is how someone classifies 500 Transactions they
-   * weren't looking at.
-   */
-  function changeFilter(next: TransactionFilter) {
-    setFilter(next);
-    setPage(0);
-    setSelected(new Set());
-    // A row being edited may not survive the new filter, and an open form the
-    // user can no longer see is a change they can't finish or abandon.
-    setEditingId(null);
-    setDeletingId(null);
-    setMarkingId(null);
-    setRowError(null);
-    setBulkNotice(null);
-    setRuleOffer(null);
-  }
-
-  /** Open one row's form, closing anything else that was open. */
-  function startEditing(id: Id) {
-    setEditingId(id);
-    setDeletingId(null);
-    setMarkingId(null);
-  }
-
-  function startDeleting(id: Id) {
-    setDeletingId(id);
-    setEditingId(null);
-    setMarkingId(null);
-  }
-
-  function startMarking(id: Id) {
-    setMarkingId(id);
-    setEditingId(null);
-    setDeletingId(null);
-    setRowError(null);
-  }
-
-  function toggleSelected(id: Id) {
-    setSelected((current) => {
-      const next = new Set(current);
-      if (!next.delete(id)) next.add(id);
-      return next;
-    });
-  }
 
   const accountName = useMemo(
     () => new Map(vault.accounts.map((a) => [a.id, a.name])),
@@ -134,6 +94,7 @@ export function TransactionsPanel() {
     () => new Map(vault.rules.map((r) => [r.id, r.pattern])),
     [vault.rules],
   );
+  const nameOfCategory = (id: Id) => categoryName.get(id) ?? "essa categoria";
 
   /** Categories split by the kind of transaction they can classify, under their Groups. */
   const treesByKind = useMemo<Record<"income" | "expense", CategoryTree>>(
@@ -153,104 +114,6 @@ export function TransactionsPanel() {
   }
 
   const months = useMemo(() => monthsWithTransactions(vault), [vault]);
-  const selection = useMemo(() => selectTransactions(vault, filter), [vault, filter]);
-
-  const pageCount = Math.max(1, Math.ceil(selection.count / PAGE_SIZE));
-  // Classifying or deleting can shrink the result under the page being viewed.
-  const currentPage = Math.min(page, pageCount - 1);
-  const rows = selection.transactions.slice(
-    currentPage * PAGE_SIZE,
-    currentPage * PAGE_SIZE + PAGE_SIZE,
-  );
-
-  /** Transfers carry no Category, so they are never selectable for classification. */
-  const selectableIds = useMemo(
-    () =>
-      selection.transactions.filter((tx) => tx.kind !== "transfer").map((tx) => tx.id),
-    [selection],
-  );
-  const allSelected =
-    selectableIds.length > 0 && selectableIds.every((id) => selected.has(id));
-
-  /** The selection's shared kind, answered by the domain (see domain/selection). */
-  const kindOfSelection = useMemo(() => selectedKind(vault, selected), [vault, selected]);
-
-  function assignToSelected(categoryId: Id) {
-    // Read the descriptions before the selection is cleared: they are what the
-    // offered Rule is guessed from.
-    const descriptions = selectedDescriptions(vault, selected);
-
-    const result = run(classifyAs([...selected], categoryId));
-    if (!result.ok) {
-      setBulkNotice(result.message);
-      return;
-    }
-    setSelected(new Set());
-    setBulkNotice(null);
-    // A refused or empty classification taught the app nothing, so only real
-    // work earns a Rule offer.
-    setRuleOffer(result.changed > 0 ? ruleOfferFor(vault, descriptions, categoryId) : null);
-  }
-
-  function acceptRuleOffer(pattern: string) {
-    if (ruleOffer === null) return;
-    const outcome = run(addRule({ pattern, categoryId: ruleOffer.categoryId }));
-    setRuleOffer(null);
-    setBulkNotice(
-      outcome.ok
-        ? `Regra criada: descrições com “${pattern}” vão para ${
-            categoryName.get(ruleOffer.categoryId) ?? "essa categoria"
-          }. Aplique-a ao resto na página Regras.`
-        : outcome.message,
-    );
-  }
-
-  function markSelectedAsTransfers(otherAccountId: Id) {
-    const result = run(markAllAsTransfers([...selected], otherAccountId));
-    if (!result.ok) return setBulkNotice(result.message);
-
-    // Every skip is named, not just counted: a batch chosen by description can
-    // sweep in an entry that cannot convert, and a count alone would leave the
-    // user believing their whole selection moved.
-    const reasons = [...new Set(result.skipped.map((s) => s.message))];
-    const converted =
-      result.converted === 1
-        ? "1 lançamento virou transferência."
-        : `${result.converted} lançamentos viraram transferências.`;
-    setBulkNotice(
-      result.skipped.length === 0
-        ? converted
-        : `${converted} ${result.skipped.length} ignorado${
-            result.skipped.length === 1 ? "" : "s"
-          }: ${reasons.join(" ")}`,
-    );
-    setSelected(new Set());
-  }
-
-  const pendingCategories = uncategorizedCount(vault);
-
-  /**
-   * What the user's own frequent decisions suggest for the backlog: by
-   * Transaction id, so each uncategorized row can show its own offer. Derived
-   * from the vault like every other read here, and applied through the store so
-   * accepting is the same write path as classifying by hand.
-   */
-  const suggestionFor = useMemo(
-    () => new Map(suggestCategories(vault).map((s) => [s.transactionId, s])),
-    [vault],
-  );
-
-  function applyAllSuggestions() {
-    const outcome = run(applySuggestions());
-    const applied = outcome.ok ? outcome.applied : 0;
-    setBulkNotice(
-      applied === 0
-        ? "Nenhuma sugestão para aplicar."
-        : applied === 1
-          ? "1 transação categorizada a partir das suas decisões anteriores."
-          : `${applied} transações categorizadas a partir das suas decisões anteriores.`,
-    );
-  }
 
   function submit(e: FormEvent) {
     e.preventDefault();
@@ -283,24 +146,30 @@ export function TransactionsPanel() {
   const inputClass =
     "rounded-md border border-slate-300 px-2 py-1 text-sm dark:border-slate-600 dark:bg-slate-900";
 
+  const bulkNotice = state.notice?.at === "bulk" ? state.notice : null;
+  const rowError = state.notice?.at === "row" ? state.notice : null;
+
   return (
     <section className="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-700 dark:bg-slate-800">
       <div className="mb-3 flex items-baseline justify-between">
         <h2 className="text-lg font-semibold text-slate-800 dark:text-slate-100">
           Transações
         </h2>
-        {pendingCategories > 0 && (
+        {view.pendingCategories > 0 && (
           <span className="flex items-center gap-2">
             <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-300">
-              {pendingCategories} sem categoria
+              {view.pendingCategories} sem categoria
             </span>
-            {suggestionFor.size > 0 && (
+            {view.suggestionFor.size > 0 && (
               <button
                 type="button"
                 className="rounded-full bg-sky-100 px-2 py-0.5 text-xs text-sky-800 underline hover:bg-sky-200 dark:bg-sky-950 dark:text-sky-300 dark:hover:bg-sky-900"
-                onClick={applyAllSuggestions}
+                onClick={() => list.applyAllSuggestions()}
               >
-                aplicar {suggestionFor.size === 1 ? "1 sugestão" : `${suggestionFor.size} sugestões`}
+                aplicar{" "}
+                {view.suggestionFor.size === 1
+                  ? "1 sugestão"
+                  : `${view.suggestionFor.size} sugestões`}
               </button>
             )}
           </span>
@@ -390,8 +259,8 @@ export function TransactionsPanel() {
       <TransferCandidates />
 
       <TransactionFilters
-        filter={filter}
-        onChange={changeFilter}
+        filter={state.filter}
+        onChange={list.changeFilter}
         accounts={vault.accounts}
         treesByKind={treesByKind}
         months={months}
@@ -399,48 +268,48 @@ export function TransactionsPanel() {
 
       {/* What the filter is actually showing, so a narrowed list is never mistaken for the whole Vault. */}
       <p className="mb-2 text-xs text-slate-500" data-testid="selection-summary">
-        {selection.count === 1 ? "1 transação" : `${selection.count} transações`}
+        {view.selection.count === 1 ? "1 transação" : `${view.selection.count} transações`}
         {" · Receitas "}
-        <span className="font-mono">{formatBRL(selection.income)}</span>
+        <span className="font-mono">{formatBRL(view.selection.income)}</span>
         {" · Despesas "}
-        <span className="font-mono">{formatBRL(selection.expense)}</span>
+        <span className="font-mono">{formatBRL(view.selection.expense)}</span>
       </p>
 
       {/* The count is the filter's whole result set, not the visible page: that is
           what makes classifying a statement one decision instead of twelve. */}
-      {selectableIds.length > 0 && (
+      {view.selectableIds.length > 0 && (
         <label className="mb-2 flex items-center gap-2 text-xs text-slate-500">
           <input
             type="checkbox"
             aria-label="Selecionar todas as transações do filtro"
-            checked={allSelected}
-            onChange={() =>
-              setSelected(allSelected ? new Set() : new Set(selectableIds))
-            }
+            checked={view.allSelected}
+            onChange={() => list.toggleAll()}
           />
-          Selecionar todas ({selectableIds.length})
+          Selecionar todas ({view.selectableIds.length})
         </label>
       )}
 
-      {selected.size > 0 && kindOfSelection !== null && (
+      {state.selected.size > 0 && view.kindOfSelection !== null && (
         <BulkActionsBar
-          selectedCount={selected.size}
-          kind={kindOfSelection}
-          tree={kindOfSelection === "mixed" ? [] : treesByKind[kindOfSelection]}
+          selectedCount={state.selected.size}
+          kind={view.kindOfSelection}
+          tree={view.kindOfSelection === "mixed" ? [] : treesByKind[view.kindOfSelection]}
           accounts={vault.accounts}
-          previewFor={(otherAccountId) => markingPreview(vault, [...selected], otherAccountId)}
-          onAssign={assignToSelected}
-          onMarkTransfers={markSelectedAsTransfers}
-          onClear={() => setSelected(new Set())}
+          previewFor={(otherAccountId) =>
+            markingPreview(vault, [...state.selected], otherAccountId)
+          }
+          onAssign={list.classifySelected}
+          onMarkTransfers={list.markSelected}
+          onClear={() => list.clearSelection()}
         />
       )}
 
-      {ruleOffer !== null && (
+      {state.ruleOffer !== null && (
         <RuleOfferForm
-          suggested={ruleOffer.pattern}
-          categoryName={categoryName.get(ruleOffer.categoryId) ?? "essa categoria"}
-          onAccept={acceptRuleOffer}
-          onDecline={() => setRuleOffer(null)}
+          suggested={state.ruleOffer.pattern}
+          categoryName={nameOfCategory(state.ruleOffer.categoryId)}
+          onAccept={list.acceptRuleOffer}
+          onDecline={() => list.declineRuleOffer()}
         />
       )}
 
@@ -449,46 +318,38 @@ export function TransactionsPanel() {
           className="mb-3 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
           role="status"
         >
-          {bulkNotice}
+          {noticeText(bulkNotice, nameOfCategory)}
         </p>
       )}
 
       <ul className="divide-y divide-slate-100 text-sm dark:divide-slate-700">
-        {rows.length === 0 && (
+        {view.rows.length === 0 && (
           <li className="py-2 text-slate-500">
             {vault.transactions.length === 0
               ? "Nenhuma transação ainda."
               : "Nenhuma transação corresponde aos filtros."}
           </li>
         )}
-        {rows.map((tx) => (
+        {view.rows.map((tx) => {
+          const open = state.openRow?.id === tx.id ? state.openRow.mode : null;
+          return (
           <li key={tx.id} className="flex flex-wrap items-center gap-2 py-2">
-            {editingId === tx.id ? (
+            {open === "editing" ? (
               <TransactionEditForm
                 transaction={tx}
                 accounts={vault.accounts}
                 treesByKind={treesByKind}
-                onSave={(changes) => {
-                  const result = run(editTransaction(tx.id, changes));
-                  // A refused edit keeps the form open with its message showing.
-                  if (result.ok) setEditingId(null);
-                  return result;
-                }}
-                onCancel={() => setEditingId(null)}
+                onSave={(changes) => list.saveRowEdit(tx.id, changes)}
+                onCancel={() => list.closeRow()}
               />
-            ) : markingId === tx.id && tx.kind !== "transfer" ? (
+            ) : open === "marking" && tx.kind !== "transfer" ? (
               <TransferMarkForm
                 transaction={tx}
                 accounts={vault.accounts}
-                onMark={(otherAccountId) => {
-                  const result = run(markAsTransfer(tx.id, otherAccountId));
-                  // A refused marking keeps the form open with its message showing.
-                  if (result.ok) setMarkingId(null);
-                  return result;
-                }}
-                onCancel={() => setMarkingId(null)}
+                onMark={(otherAccountId) => list.markRow(tx.id, otherAccountId)}
+                onCancel={() => list.closeRow()}
               />
-            ) : deletingId === tx.id ? (
+            ) : open === "deleting" ? (
               <div className="flex w-full flex-wrap items-center gap-2 py-1">
                 {/* Naming the Transaction is what makes this a confirmation and
                     not just a second click. */}
@@ -499,18 +360,14 @@ export function TransactionsPanel() {
                 <button
                   type="button"
                   className="rounded-md bg-red-600 px-3 py-1 text-xs font-medium text-white hover:bg-red-700"
-                  onClick={() => {
-                    const result = run(deleteTransaction(tx.id));
-                    setDeletingId(null);
-                    setRowError(result.ok ? null : { id: tx.id, message: result.message });
-                  }}
+                  onClick={() => list.deleteRow(tx.id)}
                 >
                   Confirmar exclusão
                 </button>
                 <button
                   type="button"
                   className="text-xs text-slate-500 underline hover:text-slate-700 dark:hover:text-slate-300"
-                  onClick={() => setDeletingId(null)}
+                  onClick={() => list.closeRow()}
                 >
                   Cancelar
                 </button>
@@ -525,8 +382,8 @@ export function TransactionsPanel() {
                 type="checkbox"
                 className="shrink-0"
                 aria-label={`Selecionar ${tx.description || "transação sem descrição"}`}
-                checked={selected.has(tx.id)}
-                onChange={() => toggleSelected(tx.id)}
+                checked={state.selected.has(tx.id)}
+                onChange={() => list.toggleSelected(tx.id)}
               />
             )}
             <div className="min-w-0 flex-1">
@@ -549,10 +406,7 @@ export function TransactionsPanel() {
                       value=""
                       onChange={(e) => {
                         if (!e.target.value) return;
-                        const result = run(classifyAs([tx.id], e.target.value));
-                        setRowError(
-                          result.ok ? null : { id: tx.id, message: result.message },
-                        );
+                        list.classifyRow(tx.id, e.target.value);
                       }}
                     >
                       <option value="">Sem categoria</option>
@@ -561,18 +415,15 @@ export function TransactionsPanel() {
                     {/* The Category the user's own repeated decisions point to;
                         one click accepts it through the same write classifying
                         by hand uses. */}
-                    {suggestionFor.has(tx.id) && (
+                    {view.suggestionFor.has(tx.id) && (
                       <button
                         type="button"
                         aria-label={`Aceitar sugestão para ${tx.description || "transação sem descrição"}`}
                         className="rounded border border-sky-300 bg-sky-50 px-1 py-0.5 text-xs text-sky-900 hover:bg-sky-100 dark:border-sky-800 dark:bg-sky-950 dark:text-sky-200 dark:hover:bg-sky-900"
-                        onClick={() => {
-                          const suggestion = suggestionFor.get(tx.id);
-                          if (suggestion !== undefined)
-                            run(classifyAs([tx.id], suggestion.categoryId));
-                        }}
+                        onClick={() => list.acceptSuggestion(tx.id)}
                       >
-                        sugestão: {categoryName.get(suggestionFor.get(tx.id)?.categoryId ?? "") ?? "?"}
+                        sugestão:{" "}
+                        {categoryName.get(view.suggestionFor.get(tx.id)?.categoryId ?? "") ?? "?"}
                       </button>
                     )}
                     · {accountName.get(tx.accountId) ?? "?"}
@@ -614,12 +465,7 @@ export function TransactionsPanel() {
                     type="button"
                     aria-label={`Desfazer transferência ${tx.description || "sem descrição"}`}
                     className="underline hover:text-slate-700 dark:hover:text-slate-200"
-                    onClick={() => {
-                      const result = run(undoMarking(tx.id));
-                      setRowError(
-                        result.ok ? null : { id: tx.id, message: result.message },
-                      );
-                    }}
+                    onClick={() => list.undoRowMarking(tx.id)}
                   >
                     desfazer transferência
                   </button>
@@ -629,7 +475,7 @@ export function TransactionsPanel() {
                   type="button"
                   aria-label={`Marcar ${tx.description || "transação sem descrição"} como transferência`}
                   className="underline hover:text-slate-700 dark:hover:text-slate-200"
-                  onClick={() => startMarking(tx.id)}
+                  onClick={() => list.openRow(tx.id, "marking")}
                 >
                   transferência
                 </button>
@@ -638,7 +484,7 @@ export function TransactionsPanel() {
                 type="button"
                 aria-label={`Editar ${tx.description || "transação sem descrição"}`}
                 className="underline hover:text-slate-700 dark:hover:text-slate-200"
-                onClick={() => startEditing(tx.id)}
+                onClick={() => list.openRow(tx.id, "editing")}
               >
                 editar
               </button>
@@ -646,7 +492,7 @@ export function TransactionsPanel() {
                 type="button"
                 aria-label={`Excluir ${tx.description || "transação sem descrição"}`}
                 className="underline hover:text-red-600"
-                onClick={() => startDeleting(tx.id)}
+                onClick={() => list.openRow(tx.id, "deleting")}
               >
                 excluir
               </button>
@@ -657,27 +503,28 @@ export function TransactionsPanel() {
               </>
             )}
           </li>
-        ))}
+          );
+        })}
       </ul>
 
-      {pageCount > 1 && (
+      {view.pageCount > 1 && (
         <div className="mt-3 flex items-center justify-between text-xs text-slate-500">
           <button
             type="button"
             className="rounded-md border border-slate-300 px-2 py-1 disabled:opacity-40 dark:border-slate-600"
-            disabled={currentPage === 0}
-            onClick={() => setPage(currentPage - 1)}
+            disabled={view.page === 0}
+            onClick={() => list.goToPage(view.page - 1)}
           >
             Anterior
           </button>
           <span>
-            Página {currentPage + 1} de {pageCount}
+            Página {view.page + 1} de {view.pageCount}
           </span>
           <button
             type="button"
             className="rounded-md border border-slate-300 px-2 py-1 disabled:opacity-40 dark:border-slate-600"
-            disabled={currentPage >= pageCount - 1}
-            onClick={() => setPage(currentPage + 1)}
+            disabled={view.page >= view.pageCount - 1}
+            onClick={() => list.goToPage(view.page + 1)}
           >
             Próxima
           </button>

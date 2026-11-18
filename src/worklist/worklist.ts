@@ -192,7 +192,8 @@ export function openRow(
   id: Id,
   mode: RowMode,
 ): WorklistState {
-  // A row-level refusal belonged to the state this form replaces.
+  // Whatever the app last said was about the state this form replaces — a
+  // refusal on this row, or what the previous gesture did.
   return { ...state, openRow: { id, mode }, notice: null };
 }
 
